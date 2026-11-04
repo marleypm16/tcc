@@ -2,7 +2,7 @@
 
 Este documento consolida a arquitetura definida no [Mapa da arquitetura do TCC](<Mapa da arquitetura do TCC.md>) para implementar a aplicação de documentação viva descrita em [escopo-tcc.md](escopo-tcc.md).
 
-As decisões são: **API e worker em Python**, **analisador como módulo importado pelo worker**, **fila de tarefas no PostgreSQL**, **um único banco**, **Gemini 3.6 Flash como IA**, **portal React somente para consulta** e **hospedagem da aplicação na Render, com PostgreSQL em uma oferta gratuita a definir**. A documentação será gravada na branch do próprio PR e revisada no GitHub. O merge incorpora código e documentação; depois dele, o worker atualiza a cópia consultada pelo portal.
+As decisões são: **API e worker em Python**, **analisador como módulo importado pelo worker**, **fila de tarefas no PostgreSQL**, **um único banco**, **Gemini 3.6 Flash como IA**, **portal React somente para consulta, com login pelo GitHub** e **hospedagem da aplicação na Render, com PostgreSQL em uma oferta gratuita a definir**. A documentação será gravada na branch do próprio PR e revisada no GitHub. O merge incorpora código e documentação; depois dele, o worker atualiza a cópia consultada pelo portal.
 
 Para o fluxo de revisão, esta definição adota a decisão do mapa: revisão e aprovação no GitHub. As referências à revisão pelo portal em `escopo-tcc.md` precisam ser alinhadas a essa decisão.
 
@@ -12,7 +12,7 @@ A aplicação será um **monólito modular com processamento assíncrono**: um p
 
 | Processo | Responsabilidade |
 |---|---|
-| **1 — API Python/FastAPI** | Receber e validar webhooks, registrar eventos e tarefas e disponibilizar os endpoints de consulta do portal. |
+| **1 — API Python/FastAPI** | Receber e validar webhooks, registrar eventos e tarefas, autenticar as pessoas no portal e disponibilizar os endpoints de consulta. |
 | **2 — Worker Python** | Reservar tarefas no banco, obter versões do código, chamar o analisador, consultar o Gemini, publicar documentação e comentários no PR e sincronizar o catálogo após o merge. |
 
 O analisador será um módulo Python importado pelo worker. A coordenação da análise, a interpretação pela IA e a publicação permanecem no mesmo processo para manter a implementação compatível com o escopo do TCC.
@@ -171,17 +171,16 @@ O GitHub **não reenvia automaticamente entregas com falha**. Inicialmente, ser�
 
 ### Fila no PostgreSQL
 
-A tabela `tarefas` armazenará o tipo de operação, sua origem, os commits, o estado de processamento, as tentativas e os erros. A estrutura abaixo é uma referência para a implementação; os demais dados da instalação e do evento poderão ser obtidos pelo registro de origem.
+A tabela `tarefas` armazenará o tipo de operação, o evento de origem, o PR, os commits, o estado de processamento, as tentativas e os erros. A estrutura abaixo é uma referência para a implementação; repositório, instalação e `delivery_id` são obtidos pelo evento de origem. As demais tabelas estão na seção 7.
 
 ```sql
 CREATE TABLE tarefas (
     id              bigserial PRIMARY KEY,
+    evento_id       bigint NOT NULL UNIQUE REFERENCES eventos (id),
+    pull_request_id bigint NOT NULL REFERENCES pull_requests (id),
     tipo            text NOT NULL, -- 'analisar_pr' | 'pr_mergeado'
-    repo            text NOT NULL,
-    pr_numero       integer NOT NULL,
     commit_sha      text,
     base_sha        text,
-    delivery_id     text UNIQUE,
     status          text NOT NULL DEFAULT 'pendente',
     tentativas      integer NOT NULL DEFAULT 0,
     disponivel_em   timestamptz NOT NULL DEFAULT now(),
@@ -189,7 +188,8 @@ CREATE TABLE tarefas (
     reserva_ate     timestamptz,
     reserva_token   uuid,
     erro            text,
-    criado_em       timestamptz NOT NULL DEFAULT now()
+    criado_em       timestamptz NOT NULL DEFAULT now(),
+    concluido_em    timestamptz
 );
 
 CREATE INDEX tarefas_pendentes_idx
@@ -217,7 +217,7 @@ RETURNING tarefa.*;
 
 O worker consultará periodicamente as tarefas disponíveis, com intervalo configurável quando a fila estiver vazia. A reserva usa `FOR UPDATE SKIP LOCKED`, que permite pular linhas já bloqueadas por outro consumidor. A transação será encerrada antes da análise e das chamadas externas. O PostgreSQL documenta esse uso para tabelas que funcionam como filas. [Bloqueio de linhas e `SKIP LOCKED`](https://www.postgresql.org/docs/current/sql-select.html#SQL-FOR-UPDATE-SHARE).
 
-Os estados previstos são `pendente`, `processando`, `concluida`, `erro` e `descartada`. A conclusão será registrada no banco junto aos resultados da etapa. A unicidade de `delivery_id`, com tratamento de conflito na inserção, impedirá a criação de outra tarefa para a mesma entrega.
+Os estados previstos são `pendente`, `processando`, `concluida`, `erro` e `descartada`. A conclusão será registrada no banco junto aos resultados da etapa. A unicidade de `delivery_id` em `eventos` e de `evento_id` em `tarefas`, com tratamento de conflito na inserção, impedirá a criação de outra tarefa para a mesma entrega.
 
 ### Recuperação de falhas e novas tentativas
 
@@ -250,7 +250,7 @@ Comentários gerais de PR utilizam as operações de comentários de issues. [AP
 
 O fluxo automático pressupõe que a instalação tenha permissão de escrita na branch de origem. O tratamento de PRs de forks e branches com restrições será definido na implementação; falta de permissão deverá ser registrada e informada no PR, sem apresentar a documentação como publicada.
 
-O portal será de consulta. Se houver repositórios privados, o controle de acesso de leitura ainda precisará ser definido. Segredos do GitHub, do Gemini e do banco permanecerão nos componentes do servidor.
+O portal será de consulta e exigirá login com a conta do GitHub, conforme a seção 7. Cada pessoa verá apenas os repositórios da instalação aos quais tem acesso. Segredos do GitHub, do Gemini e do banco permanecerão nos componentes do servidor.
 
 ### Desenvolvimento local e hospedagem
 
@@ -294,7 +294,7 @@ O **repositório analisado será a fonte oficial da documentação**, versionada
 | Local | Conteúdo |
 |---|---|
 | Repositório analisado | Catálogo em JSON e Markdown, revisado e incorporado no mesmo PR do código. |
-| PostgreSQL | Eventos, tarefas, etapas, tentativas, análises, propostas originais, métricas, histórico e cópia do catálogo incorporado. |
+| PostgreSQL | Eventos, tarefas, etapas, tentativas, análises, trechos de código analisados, propostas originais, métricas, histórico e cópia do catálogo incorporado. |
 
 ### Publicação no próprio PR
 
@@ -322,11 +322,114 @@ O React consultará catálogo, origem das regras, histórico por PR e grafo por 
 
 As propostas originais e os ajustes humanos serão preservados separadamente para a avaliação. O replay medirá a saída automática antes da intervenção humana.
 
-## 7. Organização do código e reaproveitamento
+## 7. Modelo de dados
+
+O PostgreSQL terá onze entidades e três tabelas associativas, divididas em três grupos:
+
+| Grupo | Tabelas | Papel |
+|---|---|---|
+| Acesso | `usuarios`, `usuario_repositorio` | Login no portal e repositórios que cada pessoa pode consultar. |
+| Código e catálogo | `repositorios`, `modulos`, `modulo_dependencia`, `regras`, `versoes_regra` | Estado do código e cópia do catálogo incorporado, consultados pelo portal. |
+| Operação | `pull_requests`, `eventos`, `tarefas`, `analises`, `trechos_codigo`, `propostas`, `proposta_trecho` | Recebimento, processamento e resultados das análises, usados na recuperação de falhas e na avaliação. |
+
+A instalação da GitHub App não terá tabela própria: seu identificador fica em `repositorios`. A publicação no PR é registrada em `analises`, e a sincronização após o merge, em `pull_requests`, `repositorios` e `versoes_regra`.
+
+### Autenticação
+
+O portal exigirá login com a conta do GitHub, pelo fluxo de autorização de usuário da própria GitHub App. A ferramenta não armazenará senhas. [Autenticação em nome do usuário](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-with-a-github-app-on-behalf-of-a-user).
+
+Após o login, a API consultará os repositórios da instalação acessíveis à pessoa e registrará essa relação em `usuario_repositorio`. O portal apresentará catálogo, histórico e grafo apenas desses repositórios, e a permissão será verificada novamente quando `verificado_em` expirar. [Repositórios acessíveis ao usuário](https://docs.github.com/en/rest/apps/installations#list-repositories-accessible-to-the-user-access-token).
+
+O login vale apenas para o portal. A revisão e a edição da documentação continuam no GitHub, e a autoria dessas ações é registrada pelo login do GitHub nos dados do PR.
+
+### Entidades
+
+Os campos abaixo são os principais de cada tabela; tipos, índices e campos auxiliares serão definidos nas migrações.
+
+| Entidade (tabela) | Campos principais | Restrições e observações |
+|---|---|---|
+| Usuario (`usuarios`) | `id`, `github_id`, `login`, `nome`, `email`, `criado_em`, `ultimo_acesso_em` | `github_id` único. |
+| Acesso (`usuario_repositorio`) | `usuario_id`, `repositorio_id`, `permissao`, `verificado_em` | Chave primária (`usuario_id`, `repositorio_id`). |
+| Repositorio (`repositorios`) | `id`, `github_id`, `instalacao_id`, `nome_completo`, `branch_padrao`, `commit_catalogo_atual`, `catalogo_sincronizado_em`, `ativo` | `github_id` único. `commit_catalogo_atual` impede que o catálogo retroceda. |
+| PullRequest (`pull_requests`) | `id`, `repositorio_id`, `numero`, `titulo`, `autor_login`, `estado`, `head_sha`, `base_sha`, `merge_commit_sha`, `aberto_em`, `fechado_em`, `doc_sincronizada_em` | Único (`repositorio_id`, `numero`). `estado`: `aberto`, `fechado` ou `mergeado`. |
+| Evento (`eventos`) | `id`, `delivery_id`, `acao`, `repositorio_id`, `pull_request_id`, `payload`, `motivo_ignorado`, `recebido_em` | `delivery_id` único. `motivo_ignorado` preenchido quando o evento não gera tarefa. |
+| Tarefa (`tarefas`) | `id`, `evento_id`, `pull_request_id`, `tipo`, `commit_sha`, `base_sha`, `status`, `tentativas`, `disponivel_em`, `iniciado_em`, `reserva_ate`, `reserva_token`, `erro`, `criado_em`, `concluido_em` | `evento_id` único. Estrutura detalhada na seção 4. |
+| Analise (`analises`) | `id`, `pull_request_id`, `tarefa_id`, `base_sha`, `head_sha`, `status`, `limitacoes`, `modelo`, `versao_prompt`, `parametros`, `tokens_entrada`, `tokens_saida`, `duracao_ms`, `commit_doc_sha`, `comentario_id`, `publicado_em`, `criado_em` | Único (`pull_request_id`, `base_sha`, `head_sha`, `modelo`, `versao_prompt`), para deduplicar. `tarefa_id` é nulo em execuções do replay e do terminal. `status`: `completa` ou `incompleta`. |
+| TrechoCodigo (`trechos_codigo`) | `id`, `analise_id`, `unidade`, `arquivo`, `situacao`, `papel`, `codigo_base`, `codigo_novo`, `linha_inicio_base`, `linha_fim_base`, `linha_inicio_novo`, `linha_fim_novo` | Único (`analise_id`, `unidade`). Cópia de uma unidade de código no momento da análise. `situacao`: `adicionada`, `removida`, `alterada` ou `afetada_por_constante`. `papel`: `alterada` ou `contexto`. `codigo_base` é nulo em unidades adicionadas, e `codigo_novo`, em removidas. |
+| Proposta (`propostas`) | `id`, `analise_id`, `regra_id`, `tipo`, `titulo`, `descricao`, `unidade`, `justificativa`, `criado_em` | Imutável: guarda a saída original do Gemini. `tipo`: `inclusao`, `alteracao` ou `remocao`. `regra_id` é nulo em inclusões. |
+| Referência (`proposta_trecho`) | `proposta_id`, `trecho_id` | Chave primária (`proposta_id`, `trecho_id`). Trechos de código que sustentam a proposta; ambos devem pertencer à mesma análise. |
+| Regra (`regras`) | `id`, `repositorio_id`, `identificador`, `versao_atual_id`, `criado_em` | Único (`repositorio_id`, `identificador`). Identidade estável da regra entre versões. |
+| VersaoRegra (`versoes_regra`) | `id`, `regra_id`, `numero`, `titulo`, `descricao`, `modulo_id`, `unidade`, `arquivo`, `linha_inicio`, `linha_fim`, `situacao`, `commit_sha`, `pull_request_id`, `proposta_id`, `editada_por_humano`, `sincronizado_em` | Único (`regra_id`, `numero`). Conteúdo incorporado após o merge. `situacao`: `vigente` ou `removida`. `proposta_id` único quando preenchido. |
+| Modulo (`modulos`) | `id`, `repositorio_id`, `nome_qualificado`, `caminho`, `commit_sha`, `ativo` | Único (`repositorio_id`, `nome_qualificado`). Módulos removidos são marcados como inativos, sem exclusão, para preservar as versões antigas das regras. |
+| Dependência (`modulo_dependencia`) | `origem_id`, `destino_id`, `tipo` | Chave primária (`origem_id`, `destino_id`, `tipo`). `tipo`: `importacao` ou `chamada`. |
+
+A comparação entre `propostas` e `versoes_regra` mostra o que a IA propôs e o que foi incorporado após a revisão. Essa separação sustenta a avaliação descrita na seção 6.
+
+`trechos_codigo` registra as unidades alteradas e as unidades de contexto exatamente como foram enviadas ao Gemini. Com isso, o histórico do portal pode mostrar o código anterior e o novo que motivaram cada versão de uma regra, seguindo `versoes_regra` → `propostas` → `proposta_trecho` → `trechos_codigo`, e o replay pode reproduzir cada resposta sem consultar o GitHub. A verificação de que a proposta cita unidades existentes passa a ser garantida por chave estrangeira. O texto do código é copiado para o banco; em repositórios privados, isso significa armazenar código de terceiros, o que deve constar nas limitações do estudo.
+
+Os trechos são cópias do momento da análise e não substituem o estado atual do código usado pelo grafo. As duas informações se relacionam pelo nome qualificado da unidade.
+
+### Relações e cardinalidades
+
+```mermaid
+erDiagram
+    USUARIO ||--o{ USUARIO_REPOSITORIO : "tem acesso"
+    REPOSITORIO ||--o{ USUARIO_REPOSITORIO : "é acessado por"
+    REPOSITORIO ||--o{ PULL_REQUEST : "recebe"
+    REPOSITORIO ||--o{ EVENTO : "origina"
+    PULL_REQUEST |o--o{ EVENTO : "é notificado por"
+    EVENTO ||--o| TAREFA : "gera"
+    PULL_REQUEST ||--o{ TAREFA : "é processado por"
+    PULL_REQUEST ||--o{ ANALISE : "é analisado em"
+    TAREFA |o--o| ANALISE : "produz"
+    ANALISE ||--o{ TRECHO_CODIGO : "registra"
+    ANALISE ||--o{ PROPOSTA : "contém"
+    PROPOSTA ||--|{ PROPOSTA_TRECHO : "é sustentada por"
+    TRECHO_CODIGO ||--o{ PROPOSTA_TRECHO : "sustenta"
+    REGRA |o--o{ PROPOSTA : "é alvo de"
+    REPOSITORIO ||--o{ REGRA : "documenta"
+    REGRA ||--|{ VERSAO_REGRA : "possui"
+    REGRA |o--o| VERSAO_REGRA : "aponta a versão atual"
+    PULL_REQUEST ||--o{ VERSAO_REGRA : "incorpora"
+    PROPOSTA |o--o| VERSAO_REGRA : "origina"
+    MODULO ||--o{ VERSAO_REGRA : "contém a regra"
+    REPOSITORIO ||--o{ MODULO : "contém"
+    MODULO ||--o{ MODULO_DEPENDENCIA : "depende de (origem)"
+    MODULO ||--o{ MODULO_DEPENDENCIA : "é dependência de (destino)"
+```
+
+| Relação | Cardinalidade | Implementação | Leitura |
+|---|---|---|---|
+| Usuario ↔ Repositorio | N:N | `usuario_repositorio` | Uma pessoa acessa vários repositórios, e um repositório é acessado por várias pessoas. |
+| Repositorio → PullRequest | 1:0..N | `pull_requests.repositorio_id` | Todo PR pertence a um repositório. |
+| Repositorio → Evento | 1:0..N | `eventos.repositorio_id` | Todo evento pertence a um repositório. |
+| PullRequest → Evento | 0..1:0..N | `eventos.pull_request_id` (nulo) | Um PR recebe vários eventos; um evento ignorado pode não estar ligado a um PR. |
+| Evento → Tarefa | 1:0..1 | `tarefas.evento_id` (único) | Um evento gera no máximo uma tarefa; eventos ignorados não geram nenhuma. |
+| PullRequest → Tarefa | 1:0..N | `tarefas.pull_request_id` | Um PR acumula tarefas de várias versões e do merge. |
+| PullRequest → Analise | 1:0..N | `analises.pull_request_id` | Cada nova versão do PR pode gerar uma análise. |
+| Tarefa → Analise | 0..1:0..1 | `analises.tarefa_id` (único, nulo) | Uma tarefa `analisar_pr` produz no máximo uma análise; `pr_mergeado` não produz; o replay produz análises sem tarefa. |
+| Analise → TrechoCodigo | 1:0..N | `trechos_codigo.analise_id` | Uma análise registra as unidades alteradas e as de contexto; nenhuma quando o PR não altera código Python. |
+| Analise → Proposta | 1:0..N | `propostas.analise_id` | Uma análise sem mudança de negócio não tem propostas. |
+| Proposta ↔ TrechoCodigo | N:N | `proposta_trecho` | Uma proposta cita um ou mais trechos (1..N), e um trecho sustenta zero ou mais propostas (0..N). |
+| Regra → Proposta | 0..1:0..N | `propostas.regra_id` (nulo) | Uma regra recebe várias propostas ao longo do tempo; uma inclusão ainda não tem regra. |
+| Repositorio → Regra | 1:0..N | `regras.repositorio_id` | O catálogo de cada repositório é independente. |
+| Regra → VersaoRegra | 1:1..N | `versoes_regra.regra_id` | Uma regra só existe a partir de sua primeira versão incorporada. |
+| Regra → VersaoRegra atual | 0..1:0..1 | `regras.versao_atual_id` (nulo) | Aponta a versão vigente; fica nulo apenas durante a criação da regra. |
+| PullRequest → VersaoRegra | 1:0..N | `versoes_regra.pull_request_id` | Um merge pode incorporar versões de várias regras. |
+| Proposta → VersaoRegra | 0..1:0..1 | `versoes_regra.proposta_id` (único, nulo) | Uma proposta aceita origina uma versão; versões criadas por revisores não têm proposta. |
+| Modulo → VersaoRegra | 1:0..N | `versoes_regra.modulo_id` | Cada versão da regra pertence a um módulo; um módulo contém várias regras. |
+| Repositorio → Modulo | 1:0..N | `modulos.repositorio_id` | Módulos do commit atual do catálogo. |
+| Modulo ↔ Modulo | N:N | `modulo_dependencia` (`origem_id`, `destino_id`) | Um módulo importa ou chama vários outros e é usado por vários. |
+
+`commit_catalogo_atual`, `commit_sha` e os demais SHAs são identificadores de commits do GitHub, não chaves estrangeiras. O vínculo entre regra e unidade de código é feito pelo nome qualificado em `unidade`, sem tabela própria de unidades.
+
+O grafo é armazenado no nível de módulo. Uma aresta de `chamada` entre dois módulos indica que alguma unidade do módulo de origem chama uma unidade do módulo de destino. As dependências entre funções e métodos, necessárias para selecionar o contexto, são calculadas pelo analisador a cada análise e não são gravadas no banco. Se o desenvolvimento mostrar a necessidade de consultar ou exibir o grafo de unidades, será acrescentada uma tabela de unidades de código com suas dependências.
+
+## 8. Organização do código e reaproveitamento
 
 | Módulo ou componente | Responsabilidade |
 |---|---|
-| API | Webhooks e endpoints de consulta do portal. |
+| API | Webhooks, login pelo GitHub e endpoints de consulta do portal. |
 | Processamento | Consulta e reserva de tarefas, controle de etapas, tentativas, recuperação e histórico operacional. |
 | Análise | Extração de AST, comparação de versões, dependências e seleção de contexto. |
 | IA | Preparação das solicitações, adaptador Gemini e validação das respostas. |
@@ -340,29 +443,32 @@ API e worker terão pontos de entrada distintos e reutilizarão os módulos Pyth
 
 O pipeline também poderá ser chamado pelo terminal e pelo replay histórico. Na avaliação, executará as mesmas etapas de análise e interpretação, com publicação no GitHub desabilitada e resultados registrados para comparação com o gabarito.
 
-## 8. Ordem de implementação
+## 9. Ordem de implementação
 
 1. **Analisador local:** fixar o Python, comparar duas versões pelo terminal, extrair estruturas e identificar alterações e dependências. Verificar a sintaxe dos projetos selecionados.
 2. **Catálogo e Gemini:** gerar uma base inicial, integrar o Gemini 3.6 Flash, produzir propostas estruturadas e executar o piloto para avaliar o modelo e calibrar a configuração.
 3. **Persistência e fila:** configurar PostgreSQL e SQLAlchemy, registrar evento e tarefa na mesma transação e implementar reserva, tentativas e recuperação do worker. Verificar duplicação de entregas, falha durante a análise e expiração de reservas.
 4. **GitHub App e documentação no PR:** receber eventos, publicar JSON e Markdown na branch do PR e comentar os resultados. Verificar mudanças concorrentes, novas tentativas de publicação e prevenção de ciclos gerados pelo bot.
 5. **Sincronização após merge:** importar a documentação efetivamente incorporada, preservar revisões humanas e manter o histórico sem regressão do catálogo atual. Verificar fechamento sem merge e diferentes formas de merge.
-6. **Portal React:** implementar consultas de catálogo, histórico e grafo, indicação da versão sincronizada e publicação do build estático.
+6. **Portal React:** implementar login pelo GitHub, filtro dos repositórios acessíveis, consultas de catálogo, histórico e grafo, indicação da versão sincronizada e publicação do build estático.
 7. **Avaliação:** executar replay histórico e linhas de base, medindo detecção, corretude, atualização, tempo e consumo conforme o escopo.
 
 O registro das métricas e configurações começará nas primeiras execuções. A geração da base inicial também precisará passar por revisão no GitHub antes de ser tratada como documentação vigente.
 
-## 9. Decisões resolvidas, esclarecimentos e pontos em aberto
+## 10. Decisões resolvidas, esclarecimentos e pontos em aberto
 
 Os itens respondidos foram incorporados como decisões de arquitetura. A implementação e sua validação ocorrerão nas etapas correspondentes. Quando a resposta resolve apenas parte de um item, os detalhes restantes continuam em aberto.
 
-### 9.1. Resolvidos
+### 10.1. Resolvidos
 
 - **Modelo de IA — Gemini 3.6 Flash.** O worker utilizará `gemini-3.6-flash` pelo adaptador Python. O piloto avaliará essa escolha; a seleção do modelo deixou de ser uma pendência.
 - **Compatibilidade do analisador — `ast` da versão instalada.** A ferramenta analisará código da versão atual e de versões anteriores do Python 3 que esse parser aceite. Casos incompatíveis ou não tratados serão informados como limitações. A política está definida na seção 3, sem pressupor que todo código antigo seja aceito.
 - **Hospedagem — Render e PostgreSQL em oferta gratuita.** A Render está escolhida para os processos da aplicação, e o banco deverá usar uma oferta gratuita. O provedor do banco e os planos de execução ainda precisam ser definidos, conforme as condições explicadas na seção 4.
+- **Controle de acesso — login pelo GitHub.** O portal exigirá login com a conta do GitHub e mostrará apenas os repositórios acessíveis à pessoa, conforme a seção 7.
+- **Modelo de dados — onze entidades.** Usuário, repositório, módulo, regra, versão da regra, pull request, evento, tarefa, análise, trecho de código e proposta, com as relações e cardinalidades da seção 7.
+- **Granularidade do grafo — nível de módulo.** O banco e o portal trabalham com módulos e dependências entre módulos. As dependências entre funções e métodos são calculadas em memória pelo analisador para selecionar o contexto. Uma tabela de unidades de código só será acrescentada se o desenvolvimento mostrar essa necessidade.
 
-### 9.2. Esclarecimento: ferramentas e publicação do portal React
+### 10.2. Esclarecimento: ferramentas e publicação do portal React
 
 Esse item reúne as escolhas necessárias para desenvolver as telas, buscar os dados e colocar o portal no ar:
 
@@ -373,18 +479,19 @@ Esse item reúne as escolhas necessárias para desenvolver as telas, buscar os d
 
 A dúvida sobre o significado do item fica esclarecida aqui. A escolha final das ferramentas, das rotas e da forma de publicação continua em aberto, pois ainda não foi definida na anotação.
 
-### 9.3. Em aberto
+### 10.3. Em aberto
 
 - Cotas disponíveis para o Gemini 3.6 Flash e configuração do piloto.
 - Critérios de seleção de contexto e resolução estática de dependências.
-- Formato do catálogo, caminhos gerados e identificação estável das regras entre versões.
-- Esquema final de eventos, tarefas e etapas; migrações, intervalo de consulta, duração e renovação das reservas, limites de tentativas e procedimento de reprocessamento.
+- Formato do catálogo, caminhos gerados e regra de formação do `identificador` estável das regras entre versões.
+- Detalhes do modelo de dados: tipos, índices e migrações; registro das etapas e tentativas em colunas de `tarefas` e `analises` ou em tabela própria; intervalo de consulta, duração e renovação das reservas, limites de tentativas e procedimento de reprocessamento.
+- Módulos e dependências guardam apenas o commit atual do catálogo; definir se o replay recalculará o grafo de versões antigas com o `ast` ou se o banco precisará guardar uma cópia por commit.
 - Identificação dos commits do bot, deduplicação por versão e preservação dos ajustes humanos à documentação.
 - Tratamento de PRs de forks, permissões de escrita e restrições das branches.
 - Reconciliação com a branch de referência quando novos commits ou merges tornarem uma análise desatualizada; tratamento de documentação inválida ou ausente após merge.
 - Procedimento para selecionar e revisar a documentação inicial e manter seus artefatos JSON e Markdown consistentes após edições humanas.
-- Controle de acesso de leitura no portal, caso acompanhe repositórios privados.
-- Escolhas de implementação do React explicadas na seção 9.2: ferramentas, navegação, consultas à API e publicação do build estático.
+- Detalhes do login: duração da sessão no portal, armazenamento do token do usuário no servidor e intervalo para verificar novamente as permissões.
+- Escolhas de implementação do React explicadas na seção 10.2: ferramentas, navegação, consultas à API e publicação do build estático.
 - Provedor da oferta gratuita de PostgreSQL, plano do worker na Render, disponibilidade da API para receber webhooks, backup, reinício dos processos e recuperação de entregas com falha.
 
 O primeiro incremento será o **analisador local que compara duas versões e produz diferenças estruturais e contexto**. Em seguida, o mesmo pipeline Python integrará o Gemini para propor a atualização da documentação e será reutilizado pelo worker e pelo replay.
