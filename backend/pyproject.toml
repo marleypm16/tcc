@@ -1,0 +1,114 @@
+[project]
+name = "lastro"
+version = "0.1.0"
+description = "Documentação viva de regras de negócio a partir de pull requests (TCC)."
+requires-python = ">=3.15,<3.16"
+dependencies = [
+    "alembic>=1.20.1",
+    "fastapi>=0.162.0",
+    "google-genai>=2.34.0",
+    "httpx>=0.28.1",
+    "psycopg[binary]>=3.3.8",
+    "pydantic-settings>=2.16.2",
+    "pyjwt[crypto]>=2.15.1",
+    "sqlalchemy>=2",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[project.scripts]
+lastro = "lastro.entrypoints.cli.main:main"
+lastro-worker = "lastro.entrypoints.worker.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lastro"]
+
+# --------------------------------------------------------------------------- ruff
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",  # pycodestyle
+    "F",       # pyflakes
+    "I",       # isort
+    "N",       # pep8-naming
+    "UP",      # pyupgrade
+    "B",       # bugbear
+    "C4",      # comprehensions
+    "SIM",     # simplify
+    "DTZ",     # datetimes sem fuso
+    "S",       # bandit (segurança)
+    "PT",      # estilo pytest
+    "ARG",     # argumentos não usados
+    "TID",     # tidy-imports (regra de camadas, abaixo)
+    "RUF",
+]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+# Regra de dependência da arquitetura hexagonal: domain/ e application/ não importam
+# frameworks nem bibliotecas de I/O. Os caminhos liberados estão em per-file-ignores.
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"fastapi".msg = "Framework web só em entrypoints/api."
+"starlette".msg = "Framework web só em entrypoints/api."
+"sqlalchemy".msg = "Banco só em persistencia/ e adapters/."
+"alembic".msg = "Migrações só em migrations/."
+"psycopg".msg = "Banco só em persistencia/ e adapters/."
+"pydantic".msg = "Use dataclasses no domínio e na aplicação; pydantic só em adapters/ e entrypoints/."
+"pydantic_settings".msg = "Configuração só em lastro/config.py."
+"httpx".msg = "HTTP só em adapters/."
+"google".msg = "SDK do Gemini só em interpretacao/adapters/."
+"lastro.persistencia".msg = "persistencia/ é infraestrutura: importe só em adapters/ e entrypoints/."
+"lastro.config".msg = "Configuração é injetada pelos entrypoints; não leia em domain/ ou application/."
+
+[tool.ruff.lint.per-file-ignores]
+"src/lastro/*/adapters/**" = ["TID251"]
+"src/lastro/entrypoints/**" = ["TID251"]
+"src/lastro/persistencia/**" = ["TID251"]
+"src/lastro/config.py" = ["TID251"]
+"migrations/**" = ["TID251"]
+"tests/**" = ["TID251", "S101", "S105", "S106"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+# --------------------------------------------------------------------------- mypy
+[tool.mypy]
+strict = true
+mypy_path = "src"
+packages = ["lastro"]
+plugins = ["pydantic.mypy"]
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+
+# --------------------------------------------------------------------------- pytest
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--import-mode=importlib", "--strict-markers", "-ra"]
+markers = ["integration: precisa do PostgreSQL de testes (docker compose up -d db)"]
+
+[tool.coverage.run]
+source = ["lastro"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_also = ["if __name__ == .__main__.:", "raise NotImplementedError"]
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4.1",
+    "pytest>=9.2.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.17.3",
+]

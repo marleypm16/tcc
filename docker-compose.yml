@@ -1,0 +1,22 @@
+# PostgreSQL do desenvolvimento local. API e worker rodam fora do container (uv run).
+# Cria dois bancos: `lastro` (desenvolvimento) e `lastro_testes` (testes de integração).
+services:
+  db:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: lastro
+      POSTGRES_PASSWORD: lastro
+      POSTGRES_DB: lastro
+    ports:
+      - "5432:5432"
+    volumes:
+      - dados_postgres:/var/lib/postgresql
+      - ./docker/postgres-init.sql:/docker-entrypoint-initdb.d/01-banco-testes.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lastro -d lastro"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  dados_postgres:
