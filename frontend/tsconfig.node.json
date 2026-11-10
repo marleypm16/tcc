@@ -13,7 +13,10 @@
     "moduleDetection": "force",
     "noEmit": true,
 
-    /* Linting */
+    /* Rigor */
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "erasableSyntaxOnly": true,

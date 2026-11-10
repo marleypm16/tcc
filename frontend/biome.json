@@ -17,12 +17,120 @@
   "linter": {
     "enabled": true,
     "domains": {
-      "react": "recommended"
+      "react": "all"
     },
     "rules": {
-      "preset": "recommended"
+      "preset": "recommended",
+      "complexity": {
+        "noExcessiveCognitiveComplexity": "error",
+        "noUselessFragments": "error"
+      },
+      "correctness": {
+        "noUnusedImports": "error",
+        "noUnusedVariables": "error",
+        "noUnusedFunctionParameters": "error",
+        "useExhaustiveDependencies": "error",
+        "useHookAtTopLevel": "error"
+      },
+      "style": {
+        "noNonNullAssertion": "error",
+        "noDefaultExport": "error",
+        "noParameterAssign": "error",
+        "useImportType": "error",
+        "useExportType": "error",
+        "useConst": "error",
+        "useBlockStatements": "error",
+        "useConsistentArrayType": {
+          "level": "error",
+          "options": { "syntax": "generic" }
+        },
+        "useFilenamingConvention": {
+          "level": "error",
+          "options": {
+            "strictCase": false,
+            "filenameCases": ["camelCase", "PascalCase"]
+          }
+        },
+        "useNamingConvention": "off",
+        "noRestrictedGlobals": {
+          "level": "error",
+          "options": {
+            "deniedGlobals": {
+              "fetch": "Chamadas HTTP só em src/compartilhado/api/cliente.ts. Use as funções de api.ts da funcionalidade."
+            }
+          }
+        }
+      },
+      "suspicious": {
+        "noExplicitAny": "error",
+        "noConsole": "error",
+        "noArrayIndexKey": "error",
+        "noEmptyBlockStatements": "error"
+      }
     }
   },
+  "overrides": [
+    {
+      "includes": ["src/**/componentes/**", "src/app/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "paths": {
+                  "react": {
+                    "importNames": [
+                      "useState",
+                      "useEffect",
+                      "useLayoutEffect",
+                      "useReducer",
+                      "useRef",
+                      "useMemo",
+                      "useCallback",
+                      "useContext",
+                      "useTransition",
+                      "useOptimistic",
+                      "useActionState",
+                      "useSyncExternalStore",
+                      "use"
+                    ],
+                    "message": "Componentes são só visuais. Mova estado e efeitos para um hook em hooks/ (ver frontend/CLAUDE.md)."
+                  }
+                },
+                "patterns": [
+                  {
+                    "group": ["**/api", "**/api.ts", "**/api/**"],
+                    "message": "Componentes não chamam a API. Consuma os dados por um hook."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["src/compartilhado/api/cliente.ts"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedGlobals": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": ["vite.config.ts", "*.config.ts"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noDefaultExport": "off"
+          }
+        }
+      }
+    }
+  ],
   "javascript": {
     "formatter": {
       "quoteStyle": "single",

@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "lint": "biome lint .",
     "format": "biome format --write .",
-    "check": "biome check .",
+    "check": "biome check --error-on-warnings .",
     "check:fix": "biome check --write .",
     "tipos": "tsc -b"
   },

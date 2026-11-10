@@ -78,7 +78,7 @@ docker-compose.yml       # PostgreSQL local (bancos `lastro` e `lastro_testes`)
 - Datas sempre com fuso (`datetime.now(UTC)`); o banco usa `timestamptz`.
 - Segredos só via `.env` / variáveis de ambiente; nunca no código ou em commits.
 - Toda regra de domínio e caso de uso novo vem com teste unitário usando fakes das portas. Adapters de banco têm teste de integração.
-- Frontend: componentes em PascalCase, sem `!` (non-null assertion); chamadas à API sempre por `/api/...` (proxy do Vite em dev).
+- Frontend: siga `frontend/CLAUDE.md`. Resumo: componentes só visuais e lógica em hooks (o Biome bloqueia), TypeScript estrito sem `any`/`!`, `fetch` só em `src/compartilhado/api/cliente.ts`, chamadas sempre por `/api/...`.
 
 ## Comandos
 
