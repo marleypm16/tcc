@@ -34,13 +34,13 @@ Nessa etapa, a ferramenta integra-se a modelos de linguagem de grande porte (LLM
 
 ### 3.2.3 *Feedback* no *pull request* e revisão humana
 
-A terceira etapa leva as propostas ao local em que a revisão de código já acontece. A ferramenta publica no PR um comentário que resume as regras alteradas, a documentação afetada e o texto sugerido, com referências às linhas de código correspondentes. Uma pessoa da equipe revisa cada sugestão e pode aceitá-la, ajustá-la ou rejeitá-la.
+A terceira etapa leva as propostas ao local em que a revisão de código já acontece. A ferramenta publica no PR um comentário que resume as regras alteradas e a documentação afetada, com referências às linhas de código correspondentes e um *link* para o portal, onde cada sugestão é apresentada em detalhe. Uma pessoa da equipe com permissão sobre o repositório revisa cada sugestão no portal e pode aceitá-la, ajustá-la ou rejeitá-la, solicitando, nesse caso, uma nova sugestão.
 
-A documentação vigente incorpora somente as atualizações aprovadas e correspondentes ao código integrado à *branch* de referência. Um PR fechado sem *merge* não altera o catálogo, e as propostas ainda não revisadas permanecem identificadas separadamente. O catálogo é versionado junto ao repositório, o que preserva o histórico de cada regra ao lado do código que a implementa.
+A documentação vigente incorpora somente as atualizações aprovadas e correspondentes ao código integrado à *branch* de referência. Um PR fechado sem *merge* não altera o catálogo, e as propostas ainda não revisadas permanecem identificadas separadamente. O catálogo é mantido pela ferramenta com o histórico de cada regra, e cada versão permanece vinculada ao PR e ao *commit* do código que a motivou.
 
 Por exemplo, se um PR alterar o valor mínimo exigido para a concessão de um desconto, a ferramenta deverá identificar a mudança na condição, localizar a regra documentada e sugerir o novo texto. Após a revisão e a incorporação do código, o catálogo passa a exibir a regra atual, preservando o valor anterior e o vínculo com o PR que a modificou.
 
-### 3.2.4 Portal de consulta
+### 3.2.4 Portal de consulta e revisão
 
 A quarta etapa compreende a construção da interface de usuário (*front-end*) que torna o conhecimento mantido acessível à equipe. O portal oferece um catálogo de regras de negócio pesquisável por texto e por módulo, com acesso à origem de cada regra no código. Oferece também a revisão das propostas pendentes e uma linha do tempo por PR, que apresenta o texto da regra antes e depois de cada alteração e o PR responsável.
 
@@ -52,7 +52,7 @@ A avaliação busca verificar em que medida a ferramenta mantém a documentaçã
 
 ### 3.3.1 Experimento de *replay* histórico
 
-São selecionados repositórios Python de código aberto (*open-source*) com histórico de PRs adequado à análise. Para cada repositório, a ferramenta gera a base de conhecimento em um *commit* inicial e, em seguida, reprocessa os PRs reais já mesclados, na mesma ordem em que foram integrados. A meta inicial é de dois a três repositórios e de cinquenta a cem PRs por repositório, sujeita à disponibilidade de projetos adequados e ao esforço de rotulação descrito a seguir.
+São selecionados repositórios Python de código aberto (*open-source*) com histórico de PRs adequado à análise. Para cada repositório, a ferramenta gera a base de conhecimento em um *commit* inicial e, em seguida, reprocessa os PRs reais já mesclados, na mesma ordem em que foram integrados. No *replay*, a ferramenta opera de forma automática: a base inicial e as propostas geradas para cada PR são incorporadas ao catálogo sem revisão nem ajuste antes do processamento do PR seguinte. Desse modo, a documentação resultante reflete apenas a saída da ferramenta, sem intervenção humana. A meta inicial é de dois a três repositórios e de cinquenta a cem PRs por repositório, sujeita à disponibilidade de projetos adequados e ao esforço de rotulação descrito a seguir.
 
 ### 3.3.2 Construção do gabarito
 
@@ -101,14 +101,15 @@ WAZLAWICK, R. S. **Metodologia de pesquisa para ciência da computação**. 2. e
       B --> C[Revisão da base]
       C --> D[(Catálogo vigente)]
       E[PR aberto ou atualizado] --> F[Análise incremental: unidades alteradas + LLM]
-      F --> G[Comentário no PR com propostas]
-      G --> H{Revisão humana}
+      F --> G[Comentário no PR com resumo e link para o portal]
+      G --> H{Revisão humana no portal}
       H -->|aceita / ajusta| I[Proposta aprovada]
       H -->|rejeita| J[Descartada]
+      H -->|pede nova sugestão| F
       I --> K{PR mesclado?}
       K -->|sim| D
       K -->|não| L[Catálogo inalterado]
-      D --> M[Portal: catálogo, histórico por PR e grafo]
+      D --> M[Portal: catálogo, revisão, histórico por PR e grafo]
   ```
 
 - **Pergunta de pesquisa:** a seção 3.3 remete a ela ("em que medida..."), mas ela deve ser apresentada na Introdução, que será revisada depois.

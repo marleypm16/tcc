@@ -4,13 +4,14 @@ Aplicação do TCC de Marley: **documentação viva de regras de negócio para r
 
 ## O que é e para que serve
 
-A cada pull request, o Lastro analisa o código alterado com análise estática (`ast`), usa IA (Gemini) para decidir se alguma **regra de negócio** mudou e propõe a atualização da documentação. A proposta é commitada em JSON e Markdown **na branch do próprio PR**, com um comentário explicativo. O revisor aprova código e documentação juntos no GitHub, e **o merge é a aceitação**. Depois do merge, o worker sincroniza a documentação incorporada com o banco, e o portal React permite consultar o catálogo de regras, o histórico por PR e o grafo de módulos.
+A cada pull request, o Lastro analisa o código alterado com análise estática (`ast`), usa IA (Gemini) para decidir se alguma **regra de negócio** mudou e grava as propostas de atualização da documentação no banco. O bot comenta no PR um resumo com link para o portal e publica o status `lastro/documentacao`; **ele não faz commit na branch do PR**. No portal React, quem tem permissão de escrita no repositório aprova, edita ou rejeita cada proposta. **Aprovação mais merge é a aceitação**: depois do merge, o worker incorpora as propostas aprovadas ao catálogo. O **banco é a fonte oficial** da documentação, e o portal também permite consultar o catálogo de regras, o histórico por PR e o grafo de módulos. A base inicial é gerada quando a GitHub App é instalada e chega ao repositório por um PR de ativação, que adiciona o `.lastro.yml`.
 
 O objetivo é reduzir a distância entre o comportamento do código e o conhecimento documentado sobre ele, mantendo esse conhecimento correto, atualizado e rastreável. A pergunta de pesquisa é: *em que medida uma ferramenta que analisa cada PR com análise estática e IA consegue manter a documentação correta e atualizada?* A avaliação usa replay histórico de PRs.
 
 Fontes de verdade (leia antes de decisões de arquitetura):
 - `docs/escopo-tcc.md`: escopo e propósito.
 - `docs/arquitetura-tcc.md`: arquitetura, fluxos, fila, **modelo de dados (seção 7)**, ordem de implementação (seção 9) e pontos em aberto (seção 10.3).
+- `docs/requisitos.md`: requisitos com identificadores (RF/RNF/RN) e pontos em aberto (seção 6). As decisões D1–D20 já tomadas estão em `docs/arquitetura-tcc.md` §10.1.
 - `docs/capitulo-*-revisado.md`: texto do TCC. Não altere esses arquivos sem aprovação explícita.
 
 ## Stack
@@ -41,10 +42,10 @@ backend/
       adapters/          # implementações das portas (SQLAlchemy, GitHub, Gemini)
     analise/             # núcleo ast: só domain/ e application/ (puro, sem I/O)
     interpretacao/       # IA: prompt, adaptador Gemini, validação da resposta
-    documentacao/        # propostas, geração JSON/Markdown, importação pós-merge
+    documentacao/        # propostas, decisões de revisão, base inicial, incorporação pós-merge
     processamento/       # fila de tarefas, etapas, tentativas; orquestra o pipeline
-    integracao_github/   # webhooks, autenticação do app, commits e comentários
-    catalogo/            # consultas do portal (regras, histórico, grafo)
+    integracao_github/   # webhooks, autenticação do app, PR de ativação, comentários e status
+    catalogo/            # consultas do portal (regras, histórico, grafo, propostas)
     acesso/              # login GitHub e repositórios acessíveis por usuário
     avaliacao/           # replay histórico, linhas de base, métricas
     shared/domain/       # kernel comum puro (tipos/erros usados por vários módulos)
@@ -54,7 +55,7 @@ backend/
   migrations/            # Alembic (uma sequência única, compartilhada por API e worker)
   tests/unit/            # sem I/O, portas trocadas por fakes
   tests/integration/     # PostgreSQL real (marcador `integration`)
-frontend/                # portal React (só consulta)
+frontend/                # portal React (consulta e revisão das propostas)
 docs/                    # documentos do TCC
 docker-compose.yml       # PostgreSQL local (bancos `lastro` e `lastro_testes`)
 ```

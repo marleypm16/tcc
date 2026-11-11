@@ -14,7 +14,7 @@ Portanto, o objetivo geral desta pesquisa é desenvolver e avaliar uma ferrament
 
 1. Gerar o catálogo inicial de regras de negócio e o grafo de dependências de um sistema a partir da leitura da Árvore de Sintaxe Abstrata (AST);
 2. Detectar, a cada *pull request*, alterações em regras de negócio e propor as atualizações correspondentes na documentação, com o apoio de modelos de Inteligência Artificial;
-3. Submeter as propostas à revisão humana no próprio *pull request*, incorporando ao catálogo apenas as atualizações aprovadas e integradas ao sistema;
+3. Submeter as propostas à revisão humana, a partir do próprio *pull request*, incorporando ao catálogo apenas as atualizações aprovadas e integradas ao sistema;
 4. Disponibilizar um portal com catálogo pesquisável, histórico das regras por *pull request* e grafo de dependências, facilitando a recuperação do conhecimento pelos desenvolvedores;
 5. Avaliar a detecção de mudanças, a corretude das atualizações propostas e a atualização da documentação mantida, por meio do reprocessamento de *pull requests* reais e da comparação com linhas de base.
 
