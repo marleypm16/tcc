@@ -79,7 +79,7 @@ O Quadro 5 apresenta as tecnologias empregadas na construção da ferramenta e o
 | Modelo de linguagem | Gemini 3.6 Flash, por meio da Gemini API | Interpretação das mudanças e redação das regras de negócio em linguagem natural. |
 | Portal | React, com Vite | Construção da interface de consulta e de revisão executada no navegador. |
 | Visualização do grafo | Cytoscape.js | Exibição do grafo de dependências e destaque dos módulos envolvidos em uma mudança. |
-| Hospedagem | Render | Execução do processo web e do *worker*. |
+| Hospedagem | Oracle Cloud Infrastructure (máquina virtual Arm do nível *Always Free*) e Vercel | Execução da API, do *worker* e do banco de dados na máquina virtual; publicação do portal na Vercel, que encaminha as chamadas à API. |
 
 Fonte: Elaborado pelo autor (2026)
 
@@ -406,6 +406,5 @@ PYTHON SOFTWARE FOUNDATION. **ast — Abstract Syntax Trees**. 2026. Disponível
   - Sessão de 8 h e reverificação de permissão a cada 1 h (4.7).
   - *Endpoints* de revisão do Quadro 10. Os caminhos são propostos aqui.
 - **O que saiu do texto:** o *commit* da documentação na *branch* do PR, os arquivos JSON e Markdown no repositório, o filtro de `synchronize` do bot e a edição dos arquivos na aba "Files changed". A exportação do catálogo para o repositório ficou como desejável nos requisitos (RF-DOC-03) e não aparece no capítulo.
-- **Hospedagem (Render) no Quadro 5:** o plano do *worker* e o provedor do banco ainda estão em aberto (D13). Se preferir, tire a linha até isso ser decidido.
 - **Gemini 3.6 Flash:** confirme o nome e a versão do modelo na época da entrega.
 - **Referências:** são documentações online; confira a data de acesso ao incluí-las.

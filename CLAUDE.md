@@ -27,7 +27,7 @@ Fontes de verdade (leia antes de decisões de arquitetura):
 | GitHub | GitHub App: webhooks, token de instalação, login OAuth do portal |
 | Portal | React + TypeScript + Vite, **pnpm**; grafo com Cytoscape.js |
 | Qualidade | Ruff (lint + formatação), mypy strict, pytest + pytest-cov; Biome + tsc no frontend |
-| Hospedagem | Render (API e worker); PostgreSQL em oferta gratuita a definir |
+| Hospedagem | VM Arm do Oracle Cloud Always Free (API, worker, PostgreSQL e Caddy para HTTPS); portal na Vercel com rewrite de `/api` e `/auth` para a API |
 
 Não troque nenhuma dessas escolhas (por exemplo, colocar RabbitMQ/Celery, outro LLM ou outro ORM) sem perguntar.
 

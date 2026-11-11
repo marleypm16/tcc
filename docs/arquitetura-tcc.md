@@ -2,7 +2,7 @@
 
 Este documento consolida a arquitetura definida no [Mapa da arquitetura do TCC](<Mapa da arquitetura do TCC.md>) para implementar a aplicação de documentação viva descrita em [escopo-tcc.md](escopo-tcc.md).
 
-As decisões são: **API e worker em Python**, **analisador como módulo importado pelo worker**, **fila de tarefas no PostgreSQL**, **um único banco**, **Gemini 3.6 Flash como IA**, **portal React para consulta e revisão das propostas, com login pelo GitHub** e **hospedagem da aplicação na Render, com PostgreSQL em uma oferta gratuita a definir**. As propostas da IA ficam no banco, que é a fonte oficial do catálogo. O bot comenta no PR um resumo com link para o portal e publica um status de commit. No portal, quem tem permissão de escrita aprova, edita ou rejeita cada proposta. Uma proposta aprovada só se torna vigente quando o PR é mesclado.
+As decisões são: **API e worker em Python**, **analisador como módulo importado pelo worker**, **fila de tarefas no PostgreSQL**, **um único banco**, **Gemini 3.6 Flash como IA**, **portal React para consulta e revisão das propostas, com login pelo GitHub** e **hospedagem de API, worker e PostgreSQL em uma VM do Oracle Cloud Always Free, com o portal na Vercel**. As propostas da IA ficam no banco, que é a fonte oficial do catálogo. O bot comenta no PR um resumo com link para o portal e publica um status de commit. No portal, quem tem permissão de escrita aprova, edita ou rejeita cada proposta. Uma proposta aprovada só se torna vigente quando o PR é mesclado.
 
 Para o fluxo de revisão, esta definição adota a decisão de 10/11/2026 registrada em [requisitos.md](requisitos.md) (D1+D2): revisão no portal, com o merge como aceitação final. Essa decisão substitui a revisão no GitHub registrada anteriormente no mapa e alinha este documento ao `escopo-tcc.md` e ao Cap. 3. As demais decisões de requisitos estão na seção 6 daquele documento.
 
@@ -85,7 +85,7 @@ Essa separação permite receber e registrar tarefas durante uma parada do worke
 
 O [SQLAlchemy](https://docs.sqlalchemy.org/en/20/orm/quickstart.html) será utilizado pelos dois processos, com os mesmos modelos e uma única sequência de migrações. Registrar evento e tarefa na mesma transação elimina a janela entre persistir o recebimento e encaminhar o trabalho a outra infraestrutura.
 
-O [guia do React apresenta o Vite como uma opção de build](https://react.dev/learn/build-a-react-app-from-scratch). Os arquivos gerados poderão ser servidos com os [arquivos estáticos do FastAPI](https://fastapi.tiangolo.com/tutorial/static-files/), configurando o fallback das rotas da SPA. O grafo utilizará [Cytoscape.js](https://js.cytoscape.org/).
+O [guia do React apresenta o Vite como uma opção de build](https://react.dev/learn/build-a-react-app-from-scratch). Os arquivos gerados serão publicados na Vercel, que encaminha as chamadas `/api` e `/auth` à API e devolve o `index.html` nas rotas da SPA (seção 4). O grafo utilizará [Cytoscape.js](https://js.cytoscape.org/).
 
 A fila no banco atende à proposta inicial de um worker e poucos tipos de tarefa. Essa escolha reduz a infraestrutura, mas exige implementar reserva, tentativas, recuperação e acompanhamento das tarefas. Seu comportamento será verificado antes dos experimentos.
 
@@ -276,9 +276,14 @@ O portal permitirá consultar e revisar propostas, e exigirá login com a conta 
 
 No desenvolvimento, os webhooks poderão ser encaminhados para a API local com uma ferramenta como a utilizada no [tutorial oficial do GitHub](https://docs.github.com/en/apps/creating-github-apps/writing-code-for-a-github-app/building-a-github-app-that-responds-to-webhook-events). Em operação contínua, a API precisará de um endereço público HTTPS.
 
-A **Render foi escolhida para hospedar a aplicação**. A API será um serviço web e o worker será um processo de processamento em segundo plano. O PostgreSQL utilizará uma oferta gratuita, cujo provedor ainda será definido. O build estático do React permanece proposto para publicação junto à API. Migrações, reinício, persistência e backup serão configurados na implementação.
+A hospedagem foi definida em 11/11/2026 (D13) e usa dois provedores:
 
-A escolha da Render não resolve o plano de execução: na consulta de 29/10/2026, seus workers dedicados não têm instância gratuita. O serviço web gratuito suspende por inatividade, o que pode comprometer o prazo de resposta do webhook na primeira requisição. Se o banco escolhido for o PostgreSQL gratuito da própria Render, ele expira após 30 dias. O plano do worker, a disponibilidade da API e a continuidade do banco precisam ser definidos antes da implantação. [Planos gratuitos da Render](https://render.com/docs/free) e [serviços de worker](https://render.com/docs/background-workers).
+- **Oracle Cloud Always Free:** uma VM Arm (Ampere A1) com 2 OCPUs e 12 GB de memória, dentro da cota gratuita de 1.500 OCPU·h e 9.000 GB·h por mês. Ela roda a API, o worker e o PostgreSQL como processos separados, com reinício automático em caso de falha. O **Caddy** fica na frente da API e emite e renova o certificado HTTPS (Let's Encrypt), o que exige um domínio ou subdomínio apontando para a VM.
+- **Vercel:** publica o build estático do portal. Um *rewrite* encaminha `/api/*` e `/auth/*` à API na VM e devolve o `index.html` nas demais rotas. Para o navegador, portal e API ficam na mesma origem, o que mantém o cookie de sessão `SameSite=Lax`, a proteção contra CSRF e o callback do OAuth sem CORS.
+
+A VM não suspende por inatividade, então a API responde aos webhooks dentro do prazo do GitHub, ao contrário dos serviços web gratuitos que hibernam. Como o banco é a fonte oficial (RN-07), o backup é um `pg_dump` diário enviado ao Object Storage da Oracle, com a restauração testada ao menos uma vez antes dos experimentos.
+
+Riscos conhecidos: a criação de instâncias A1 pode falhar por falta de capacidade na região, e a Oracle pode recuperar instâncias Always Free ociosas. Para evitar a recuperação, a conta será convertida para *Pay As You Go*, que não gera cobrança enquanto o uso ficar dentro da cota gratuita. As dependências do projeto precisam ter pacotes para arm64 no Python 3.15, o que será conferido na primeira implantação. Nada disso afeta o replay, que roda no terminal.
 
 No desenvolvimento do React em outra origem, será necessário configurar encaminhamento à API ou [CORS](https://fastapi.tiangolo.com/tutorial/cors/).
 
@@ -527,7 +532,7 @@ Os itens respondidos foram incorporados como decisões de arquitetura. A impleme
 
 - **Modelo de IA — Gemini 3.6 Flash.** O worker utilizará `gemini-3.6-flash` pelo adaptador Python. O piloto avaliará essa escolha; a seleção do modelo deixou de ser uma pendência.
 - **Compatibilidade do analisador — `ast` da versão instalada.** A ferramenta analisará código da versão atual e de versões anteriores do Python 3 que esse parser aceite. Casos incompatíveis ou não tratados serão informados como limitações. A política está definida na seção 3, sem pressupor que todo código antigo seja aceito.
-- **Hospedagem — Render e PostgreSQL em oferta gratuita.** A Render está escolhida para os processos da aplicação, e o banco deverá usar uma oferta gratuita. O provedor do banco e os planos de execução ainda precisam ser definidos, conforme as condições explicadas na seção 4.
+- **Hospedagem — Oracle Cloud e Vercel** (D13). API, worker e PostgreSQL em uma VM Arm do Oracle Cloud Always Free, com Caddy para HTTPS e `pg_dump` diário no Object Storage. Portal na Vercel, com *rewrite* de `/api` e `/auth` para a API. Detalhes e riscos na seção 4.
 - **Controle de acesso — login pelo GitHub.** O portal exigirá login com a conta do GitHub e mostrará apenas os repositórios acessíveis à pessoa, conforme a seção 7.
 - **Modelo de dados — catorze entidades.** Usuário, sessão, repositório, módulo, regra, versão da regra, pull request, evento, tarefa, etapa da tarefa, análise, trecho de código, proposta e decisão, com as relações e cardinalidades da seção 7.
 - **Revisão no portal e banco como fonte oficial** (`requisitos.md`, D1+D2 e D8). O bot comenta e publica status no PR, sem fazer commit na branch. A revisão acontece no portal, e aprovação mais merge é a aceitação. Rejeitar significa descartar ou refazer com motivo, até 3 vezes. A edição direta de regras vigentes fica para uma versão futura. Como o bot não escreve na branch, não há conflito com edições humanas nem ciclo de análises.
@@ -551,9 +556,9 @@ Esse item reúne as escolhas necessárias para desenvolver as telas, buscar os d
 1. **Ferramentas:** são os programas usados para desenvolver e preparar o frontend para publicação. O Vite é a proposta atual: oferece o servidor de desenvolvimento e gera o build, um conjunto de arquivos HTML, CSS e JavaScript que o navegador carrega. [Build com Vite](https://vite.dev/guide/build.html).
 2. **Navegação:** define como a pessoa passa entre catálogo, histórico, grafo e revisão, inclusive ao abrir um endereço diretamente. Por exemplo, `/catalogo` e `/historico` poderiam abrir telas diferentes; esses caminhos são ilustrativos e ainda serão definidos.
 3. **Consultas à API:** definem como cada tela pede seus dados ao FastAPI e apresenta carregamento, resultado ou erro. Por exemplo, ao abrir o catálogo, o React poderia chamar `GET /api/regras`; a API consultaria o PostgreSQL e devolveria JSON para a tela. Esse endpoint também é ilustrativo.
-4. **Publicação do build estático:** significa disponibilizar os arquivos gerados para que o navegador possa baixá-los. A proposta atual é servi-los pela própria API hospedada na Render. O servidor de desenvolvimento do Vite é usado durante o trabalho local; a publicação utiliza o build.
+4. **Publicação do build estático:** significa disponibilizar os arquivos gerados para que o navegador possa baixá-los. Eles serão publicados na Vercel, com *rewrite* das chamadas à API (D13, seção 4). O servidor de desenvolvimento do Vite é usado durante o trabalho local; a publicação utiliza o build.
 
-A dúvida sobre o significado do item fica esclarecida aqui. A escolha final das ferramentas, das rotas e da forma de publicação continua em aberto, pois ainda não foi definida na anotação.
+A dúvida sobre o significado do item fica esclarecida aqui. A forma de publicação foi definida (D13). A escolha final das ferramentas e das rotas continua em aberto.
 
 ### 10.3. Em aberto
 
@@ -564,7 +569,7 @@ Os itens abaixo correspondem à seção 6.2 de [requisitos.md](requisitos.md), q
 - Regra de formação do `identificador` estável das regras e formato da exportação opcional do catálogo para o repositório (D5).
 - Campos e formato do `.lastro.yml` (D18).
 - Detalhes do modelo de dados: tipos, índices e migrações; procedimento de reprocessamento de tarefas em erro.
-- Escolhas de implementação do React explicadas na seção 10.2: ferramentas, navegação, consultas à API e publicação do build estático.
-- Provedor da oferta gratuita de PostgreSQL, plano do worker na Render, disponibilidade da API para receber webhooks, backup, reinício dos processos e recuperação de entregas com falha (D13).
+- Escolhas de implementação do React explicadas na seção 10.2: ferramentas, navegação e consultas à API.
+- Procedimento de recuperação de entregas de webhook com falha (RNF-OPE-06).
 
 O primeiro incremento será o **analisador local que compara duas versões e produz diferenças estruturais e contexto**. Em seguida, o mesmo pipeline Python integrará o Gemini para propor a atualização da documentação e será reutilizado pelo worker e pelo replay.

@@ -1,8 +1,8 @@
 # Lastro — Especificação de requisitos
 
-Versão 0.7 · 10/11/2026 · rascunho para revisão (em aberto: D5, D13, D14, D17, D18)
+Versão 0.8 · 11/11/2026 · rascunho para revisão (em aberto: D5, D14, D17, D18)
 
-Este documento reúne os requisitos funcionais e não funcionais do Lastro, levantados a partir de [escopo-tcc.md](escopo-tcc.md), [arquitetura-tcc.md](arquitetura-tcc.md), [Mapa da arquitetura do TCC](<Mapa da arquitetura do TCC.md>) e dos capítulos 1, 3 e 4 revisados. As decisões já tomadas (D1–D4, D6–D12, D15, D16, D19, D20) foram incorporadas a esses documentos e estão resumidas na seção 10.1 da arquitetura. Aqui ficam apenas os pontos ainda em aberto (seção 6).
+Este documento reúne os requisitos funcionais e não funcionais do Lastro, levantados a partir de [escopo-tcc.md](escopo-tcc.md), [arquitetura-tcc.md](arquitetura-tcc.md), [Mapa da arquitetura do TCC](<Mapa da arquitetura do TCC.md>) e dos capítulos 1, 3 e 4 revisados. As decisões já tomadas (D1–D4, D6–D13, D15, D16, D19, D20) foram incorporadas a esses documentos e estão resumidas na seção 10.1 da arquitetura. Aqui ficam apenas os pontos ainda em aberto (seção 6).
 
 ## 1. Convenções
 
@@ -297,11 +297,11 @@ Manter a documentação das regras de negócio de repositórios Python no GitHub
 
 | ID | Requisito | Prioridade | Fonte |
 |---|---|---|---|
-| RNF-OPE-01 | API e worker são hospedados na Render; o PostgreSQL usa uma oferta gratuita (provedor a definir, D13). | Essencial | A§4 |
-| RNF-OPE-02 | A API deve ter endereço público HTTPS para receber webhooks. | Essencial | A§4 |
-| RNF-OPE-03 | O build estático do portal é servido pela própria API. | Importante | A§1, A§4 |
+| RNF-OPE-01 | API, worker e PostgreSQL rodam em uma VM Arm (Ampere A1) do Oracle Cloud Always Free, como processos separados que reiniciam sozinhos em caso de falha. O portal é publicado na Vercel. | Essencial | A§4, D13 |
+| RNF-OPE-02 | A API deve ter endereço público HTTPS para receber webhooks, com o Caddy na frente da API emitindo e renovando o certificado (Let's Encrypt). | Essencial | A§4, D13 |
+| RNF-OPE-03 | O build estático do portal é publicado na Vercel, que repassa `/api/*` e `/auth/*` à API (rewrite) e devolve o `index.html` nas demais rotas. Assim portal e API ficam na mesma origem para o navegador (cookie de sessão, CSRF e callback do OAuth). | Importante | A§4, D13 |
 | RNF-OPE-04 | O ambiente local deve subir com `make db`, `make migrar`, `make api`, `make worker` e `make portal`, com encaminhamento de webhooks para a API local. | Essencial | A§4, CLAUDE.md |
-| RNF-OPE-05 | Deve haver backup do banco e procedimento de reinício dos processos. Como o banco passa a ser a fonte oficial (RN-07), o backup é Essencial. | Essencial | A§1, A§4, D2 |
+| RNF-OPE-05 | Deve haver backup do banco e procedimento de reinício dos processos. Como o banco passa a ser a fonte oficial (RN-07), o backup é Essencial: `pg_dump` diário enviado ao Object Storage da Oracle, com restauração testada ao menos uma vez. | Essencial | A§1, A§4, D2, D13 |
 | RNF-OPE-06 | Entregas de webhook com falha devem poder ser conferidas e reenviadas manualmente (o GitHub não reenvia sozinho). | Importante | A§4 |
 | RNF-OPE-07 | O histórico de etapas e tentativas no banco deve permitir diagnosticar uma tarefa sem acesso aos logs do servidor. | Importante | A§4 |
 
@@ -312,7 +312,6 @@ Itens que a arquitetura (seção 10.3) mantém em aberto. Os números D1–D20 s
 | # | Ponto | Situação e proposta | Requisitos afetados |
 |---|---|---|---|
 | D5 | **Identificador estável e exportação.** | Formato do identificador da regra: `RN-<modulo>-<nnn>` (legível, mas preso ao nome do módulo) ou código curto (ex.: `r-7f3a`). Com D2, os arquivos no repositório passam a ser só uma exportação desejável: falta definir formato, caminhos e como publicar (PR próprio após o merge?). | RF-DOC-01–03 |
-| D13 | **Plano de hospedagem.** *(Adiado: Marley vai pesquisar.)* | Worker da Render não tem instância gratuita; serviço web gratuito hiberna (risco ao RNF-DES-01); provedor do banco indefinido. Não afeta o replay, que roda no terminal. Com D2, o banco é a fonte oficial, o que pesa na escolha do provedor (backup, expiração do plano gratuito). | RNF-OPE-01, RNF-OPE-05, RNF-DES-01 |
 | D14 | **Cotas do Gemini.** *(Adiado.)* | Verificado por Marley: o nível gratuito permite **250 requisições por dia**. A base inicial faz hoje uma chamada por unidade (RF-IA-06) e é o maior consumo. Falta decidir como a ferramenta respeita esse limite e definir o protocolo do piloto. | RNF-DES-04, RF-IA-06, RF-AV-* |
 | D17 | **Limite de tamanho do contexto.** *(Adiado.)* | Com um nível fixo (D7), uma função muito chamada pode trazer dezenas de vizinhas. *Proposta:* limite de tokens por chamada, configurável; acima dele, manter as vizinhas que já têm regras vinculadas e cortar as demais, registrando o corte como limitação da análise. | RF-AN-11, RNF-DES-04 |
 | D18 | **Conteúdo do `.lastro.yml`.** *(Adiado.)* | *Proposta:* versão do formato, branch de referência, padrões de arquivos de teste e de diretórios ignorados. A ferramenta lê o arquivo da branch de referência a cada análise. | RF-AN-14, RF-DOC-15 |
