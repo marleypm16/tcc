@@ -47,7 +47,7 @@ Essa separação permite receber e registrar tarefas durante uma parada do worke
 ### Fluxo de ativação
 
 1. A GitHub App é instalada em um repositório, e o GitHub envia o evento `installation` ou `installation_repositories`.
-2. O worker gera a base inicial (grafo e catálogo inicial) a partir da branch principal.
+2. O worker gera a base inicial (grafo e catálogo inicial) a partir da branch de referência, que por padrão é a branch padrão do repositório no GitHub e pode ser trocada no portal por quem administra o repositório.
 3. O worker abre o PR de ativação, que adiciona o `.lastro.yml` e traz na descrição o link para revisar o catálogo inicial no portal.
 4. As regras da base são revisadas no portal como propostas desse PR. O merge do PR de ativação torna a base vigente.
 
@@ -162,10 +162,11 @@ O GitHub apresenta esse fluxo em seu [tutorial de aplicação que responde a web
 | `pull_request` `reopened` | Verificar a versão atual e criar `analisar_pr` quando necessário. |
 | `pull_request` `closed` com `merged: true` | Criar `pr_mergeado` para incorporar as propostas aprovadas. No PR de ativação, isso torna a base vigente. |
 | `pull_request` `closed` sem merge | Registrar o encerramento, descartar as tarefas pendentes e as decisões tomadas e manter o catálogo vigente. |
+| `pull_request` com destino diferente da branch de referência | Registrar com `motivo_ignorado`, sem tarefa nem comentário. O catálogo descreve uma única branch. |
 
 Os eventos e seus campos estão na [documentação de payloads do GitHub](https://docs.github.com/en/webhooks/webhook-events-and-payloads).
 
-O PR de ativação é aberto pelo próprio bot. Seus eventos `opened` e `synchronize` são registrados com `motivo_ignorado`, sem tarefa de análise, porque as propostas desse PR vêm da tarefa `gerar_base`. O PR é identificado por `repositorios.pull_request_ativacao_id`. Como o bot não faz commits nos PRs dos desenvolvedores, não há ciclo de análises a evitar.
+O PR de ativação é aberto pelo próprio bot. Seus eventos `opened` e `synchronize` são registrados com `motivo_ignorado`, sem tarefa de análise, porque as propostas desse PR vêm da tarefa `gerar_base`. A exceção é um `synchronize` que altera o `.lastro.yml`: ele cria uma nova `gerar_base` com a configuração alterada. O PR é identificado por `repositorios.pull_request_ativacao_id`. Como o bot não faz commits nos PRs dos desenvolvedores, não há ciclo de análises a evitar.
 
 ### Recebimento transacional
 
@@ -325,9 +326,37 @@ O **PostgreSQL será a fonte oficial da documentação**. Ele guarda o catálogo
 
 ### Ativação e base inicial
 
-A tarefa `gerar_base` lê a branch principal, gera o grafo e o catálogo inicial e abre o **PR de ativação** ("Lastro: base inicial"). Esse PR adiciona o `.lastro.yml`, que guarda a configuração do repositório, como o critério de exclusão de arquivos de teste, e traz na descrição o resumo do catálogo inicial e o link para revisá-lo no portal. A análise da base fica vinculada a esse PR, e suas regras são propostas de inclusão.
+A tarefa `gerar_base` lê a branch de referência, gera o grafo e o catálogo inicial e abre o **PR de ativação** ("Lastro: base inicial"). Esse PR adiciona o `.lastro.yml` com a configuração usada na geração e traz na descrição o resumo do catálogo inicial e o link para revisá-lo no portal. A análise da base fica vinculada a esse PR, e suas regras são propostas de inclusão.
 
 As propostas da base são revisadas como as de qualquer PR, com a opção de aprovar todas de uma vez. O merge do PR de ativação marca o repositório como ativo e torna a base vigente. Até lá, os demais PRs não são analisados e recebem apenas um comentário com link. Se o PR de ativação for fechado sem merge, o repositório passa à situação `inativo`. A reativação pode ser pedida pelo portal, por quem tem permissão de escrita no repositório, ou pelo terminal; nos dois casos, uma nova tarefa `gerar_base` gera outra base e abre um novo PR de ativação.
+
+### Configuração do repositório (D18)
+
+**Branch de referência.** Cada repositório acompanha uma única branch, guardada em `repositorios.branch_referencia`. O padrão é a branch padrão do GitHub; quem tem permissão de administração no repositório pode escolher outra no portal (por exemplo, `develop` ou `staging`). Só PRs com destino a essa branch são analisados, e só merges nela são incorporados. A troca gera uma nova base e um novo PR de ativação na nova branch; um PR de ativação aberto é fechado pelo bot, sem marcar o repositório como `inativo`. O catálogo anterior continua disponível para consulta até o merge do novo PR de ativação. A branch fica no banco, e não no `.lastro.yml`, porque a base é gerada antes de o arquivo existir e porque o arquivo é lido da própria branch de referência. Acompanhar várias branches, com um catálogo por branch, fica como trabalho futuro.
+
+**Arquivo `.lastro.yml`.** Guarda o que delimita o código analisado:
+
+```yaml
+versao: 1
+raizes:                  # onde está o Python; padrão: o repositório inteiro
+  - backend/src
+ignorar:
+  testes:                # substitui o padrão do D6
+    - "tests/**"
+    - "**/test_*.py"
+    - "**/*_test.py"
+    - "**/conftest.py"
+  caminhos:              # migrações, scripts, código gerado
+    - "backend/src/**/migrations/**"
+    - "**/*_pb2.py"
+dominio:                 # opcional, entra no prompt
+  descricao: "Sistema de matrícula e cobrança de uma escola de idiomas."
+  idioma: pt
+```
+
+Só arquivos `.py` são analisados, sem configuração: num repositório com Python e TypeScript, o restante é ignorado. As raízes delimitam a busca e definem o nome dos módulos (`backend/src/lastro/pedidos.py` → `lastro.pedidos`). Modelo, prompt, cotas e limites de contexto ficam na configuração do servidor, para que o repositório não altere as condições do experimento nem o consumo da cota.
+
+Cada análise usa o `.lastro.yml` do commit base do PR, de modo que uma mudança no arquivo só vale depois do merge; a configuração usada é registrada em `analises.configuracao`. Sem arquivo, valem os padrões. Arquivo inválido faz a análise falhar sem novas tentativas, com status `error` e explicação no comentário. Regras vigentes de arquivos que passam a ser ignorados continuam no catálogo, mas deixam de ser acompanhadas. No replay, a branch e a configuração são passadas pelo comando de terminal e mantidas fixas em toda a sequência.
 
 ### Publicação no PR
 
@@ -355,7 +384,7 @@ A aprovação não altera o catálogo vigente. **Aprovação no portal mais merg
 
 ### Incorporação após o merge
 
-A tarefa `pr_mergeado` obterá o commit efetivamente incorporado à branch de referência, resolvido conforme o tipo de merge (comum, squash ou rebase), e criará uma nova versão para cada regra afetada por uma proposta aprovada, com o texto editado quando houver. [Identificação do commit após o merge](https://docs.github.com/en/rest/pulls/pulls#get-a-pull-request).
+A tarefa `pr_mergeado` obterá o commit efetivamente incorporado à branch de referência (seção 6, configuração do repositório), resolvido conforme o tipo de merge (comum, squash ou rebase), e criará uma nova versão para cada regra afetada por uma proposta aprovada, com o texto editado quando houver. [Identificação do commit após o merge](https://docs.github.com/en/rest/pulls/pulls#get-a-pull-request).
 
 A incorporação deverá ser idempotente e registrar repositório, PR, versão do código, propostas incorporadas e horário. Tarefas de merges recebidas fora de ordem poderão acrescentar versões ao histórico, mas não deverão fazer o catálogo atual retroceder; a atualização verificará a relação entre os commits da branch de referência.
 
@@ -386,7 +415,7 @@ O portal exigirá login com a conta do GitHub, pelo fluxo de autorização de us
 
 Após o login, a API consultará os repositórios da instalação acessíveis à pessoa e registrará essa relação em `usuario_repositorio`. O portal apresentará catálogo, histórico, grafo e propostas apenas desses repositórios, e a permissão será verificada novamente quando `verificado_em` tiver mais de 1 hora. [Repositórios acessíveis ao usuário](https://docs.github.com/en/rest/apps/installations#list-repositories-accessible-to-the-user-access-token).
 
-`usuario_repositorio.permissao` registra se a pessoa tem permissão de escrita no repositório. Só quem tem escrita pode decidir propostas, e a API recusa decisões das demais.
+`usuario_repositorio.permissao` registra o nível de permissão da pessoa no repositório. Só quem tem escrita pode decidir propostas, e só quem tem administração pode trocar a branch de referência; a API recusa essas operações das demais.
 
 A sessão usa um cookie `HttpOnly`, `Secure` e `SameSite=Lax`, válido por 8 horas, o prazo do token de usuário da GitHub App. Ao expirar, a pessoa faz login novamente. O token do usuário fica cifrado em `sessoes` e nunca é enviado ao navegador. As requisições que alteram estado são protegidas contra CSRF.
 
@@ -398,13 +427,13 @@ Os campos abaixo são os principais de cada tabela; tipos, índices e campos aux
 |---|---|---|
 | Usuario (`usuarios`) | `id`, `github_id`, `login`, `nome`, `email`, `criado_em`, `ultimo_acesso_em` | `github_id` único. |
 | Sessao (`sessoes`) | `id`, `usuario_id`, `token_cifrado`, `expira_em`, `criado_em` | O `id` vai no cookie; `token_cifrado` é o token de usuário do GitHub cifrado. |
-| Acesso (`usuario_repositorio`) | `usuario_id`, `repositorio_id`, `permissao`, `verificado_em` | Chave primária (`usuario_id`, `repositorio_id`). `permissao`: `leitura` ou `escrita`; só `escrita` decide propostas. |
-| Repositorio (`repositorios`) | `id`, `github_id`, `instalacao_id`, `nome_completo`, `branch_padrao`, `situacao`, `pull_request_ativacao_id`, `commit_catalogo_atual`, `catalogo_atualizado_em`, `ativo` | `github_id` único. `situacao`: `gerando_base`, `em_ativacao`, `ativo` ou `inativo` (PR de ativação fechado sem merge). `commit_catalogo_atual` impede que o catálogo retroceda. |
+| Acesso (`usuario_repositorio`) | `usuario_id`, `repositorio_id`, `permissao`, `verificado_em` | Chave primária (`usuario_id`, `repositorio_id`). `permissao`: `leitura`, `escrita` ou `admin`; `escrita` e `admin` decidem propostas, e só `admin` troca a branch de referência. |
+| Repositorio (`repositorios`) | `id`, `github_id`, `instalacao_id`, `nome_completo`, `branch_referencia`, `situacao`, `pull_request_ativacao_id`, `commit_catalogo_atual`, `catalogo_atualizado_em`, `ativo` | `github_id` único. `branch_referencia`: branch acompanhada; por padrão, a branch padrão do GitHub. `situacao`: `gerando_base`, `em_ativacao`, `ativo` ou `inativo` (PR de ativação fechado sem merge). `commit_catalogo_atual` impede que o catálogo retroceda. |
 | PullRequest (`pull_requests`) | `id`, `repositorio_id`, `numero`, `titulo`, `autor_login`, `estado`, `head_sha`, `base_sha`, `merge_commit_sha`, `aberto_em`, `fechado_em`, `incorporado_em` | Único (`repositorio_id`, `numero`). `estado`: `aberto`, `fechado` ou `mergeado`. |
 | Evento (`eventos`) | `id`, `delivery_id`, `tipo`, `acao`, `repositorio_id`, `pull_request_id`, `payload`, `motivo_ignorado`, `recebido_em` | `delivery_id` único. `tipo`: `installation`, `installation_repositories` ou `pull_request`. `motivo_ignorado` preenchido quando o evento não gera tarefa. |
 | Tarefa (`tarefas`) | `id`, `evento_id`, `repositorio_id`, `pull_request_id`, `proposta_id`, `tipo`, `commit_sha`, `base_sha`, `status`, `tentativas`, `disponivel_em`, `iniciado_em`, `reserva_ate`, `reserva_token`, `erro`, `criado_em`, `concluido_em` | `evento_id` único quando preenchido. Estrutura e tipos na seção 4. |
 | EtapaTarefa (`etapas_tarefa`) | `id`, `tarefa_id`, `etapa`, `tentativa`, `iniciado_em`, `concluido_em`, `resultado`, `erro` | Histórico das etapas: recebimento, análise, chamadas ao Gemini, publicação e incorporação. |
-| Analise (`analises`) | `id`, `pull_request_id`, `tarefa_id`, `tipo`, `base_sha`, `head_sha`, `status`, `limitacoes`, `modelo`, `versao_prompt`, `parametros`, `tokens_entrada`, `tokens_saida`, `duracao_ms`, `comentario_id`, `status_publicado_em`, `criado_em` | Único (`pull_request_id`, `base_sha`, `head_sha`, `modelo`, `versao_prompt`), para deduplicar. `tipo`: `base` ou `incremental`. `pull_request_id` e `tarefa_id` são nulos em execuções do replay e do terminal. `status`: `completa` ou `incompleta`. |
+| Analise (`analises`) | `id`, `pull_request_id`, `tarefa_id`, `tipo`, `base_sha`, `head_sha`, `status`, `limitacoes`, `modelo`, `versao_prompt`, `parametros`, `configuracao`, `tokens_entrada`, `tokens_saida`, `duracao_ms`, `comentario_id`, `status_publicado_em`, `criado_em` | Único (`pull_request_id`, `base_sha`, `head_sha`, `modelo`, `versao_prompt`), para deduplicar. `tipo`: `base` ou `incremental`. `pull_request_id` e `tarefa_id` são nulos em execuções do replay e do terminal. `status`: `completa` ou `incompleta`. `configuracao`: conteúdo do `.lastro.yml` usado, ou dos padrões. |
 | TrechoCodigo (`trechos_codigo`) | `id`, `analise_id`, `unidade`, `arquivo`, `situacao`, `papel`, `codigo_base`, `codigo_novo`, `linha_inicio_base`, `linha_fim_base`, `linha_inicio_novo`, `linha_fim_novo` | Único (`analise_id`, `unidade`). Cópia de uma unidade de código no momento da análise. `situacao`: `adicionada`, `removida`, `alterada` ou `afetada_por_constante`. `papel`: `alterada` ou `contexto`. `codigo_base` é nulo em unidades adicionadas, e `codigo_novo`, em removidas. |
 | Proposta (`propostas`) | `id`, `analise_id`, `regra_id`, `substitui_id`, `tipo`, `titulo`, `descricao`, `unidade`, `justificativa`, `criado_em` | Imutável: guarda a saída original do Gemini. `tipo`: `inclusao`, `alteracao` ou `remocao`. `regra_id` é nulo em inclusões. `substitui_id` aponta a proposta rejeitada que esta refaz. |
 | Decisao (`decisoes`) | `id`, `proposta_id`, `numero`, `usuario_id`, `tipo`, `titulo`, `descricao`, `motivo`, `herdada_de_id`, `criado_em` | Único (`proposta_id`, `numero`), usado no controle de concorrência. `tipo`: `aprovada`, `editada`, `descartada` ou `refazer`. A decisão mais recente define a situação da proposta. `herdada_de_id` indica a decisão copiada de uma análise anterior do mesmo PR, quando a unidade não mudou. |
@@ -539,6 +568,7 @@ Os itens respondidos foram incorporados como decisões de arquitetura. A impleme
 - **Base inicial por PR de ativação** (D4, D15). A geração é disparada pela instalação da App ou pelo terminal. O bot abre um PR com o `.lastro.yml`, as regras da base são revisadas no portal, e o merge torna a base vigente.
 - **Propostas pendentes visíveis** (D3). Resumo no comentário do PR e detalhe na tela de revisão.
 - **Arquivos de teste fora da análise** (D6, provisório). Critério configurável no `.lastro.yml`.
+- **Configuração do repositório** (D18). Uma branch de referência por repositório, guardada no banco, com padrão na branch padrão do GitHub e troca no portal por quem administra o repositório. O `.lastro.yml` tem `versao`, `raizes`, `ignorar.testes`, `ignorar.caminhos` e `dominio` (opcional) e é lido do commit base de cada PR. Detalhes na seção 6.
 - **Contexto de um nível** (D7). Vizinhos diretos no grafo, profundidade fixa.
 - **Fila** (D10). Consulta a cada 5 s, reserva de 5 min renovada a cada 1 min, até 5 tentativas com espera crescente e tabela `etapas_tarefa`.
 - **Grafo no replay** (D11). Recalculado com `ast` a cada commit, sem cópia no banco.
@@ -562,12 +592,11 @@ A dúvida sobre o significado do item fica esclarecida aqui. A forma de publica�
 
 ### 10.3. Em aberto
 
-Os itens abaixo correspondem à seção 6.2 de [requisitos.md](requisitos.md), que traz o detalhe de cada um.
+Os itens abaixo correspondem à seção 6 de [requisitos.md](requisitos.md), que traz o detalhe de cada um.
 
 - Cotas disponíveis para o Gemini 3.6 Flash e configuração do piloto (D14).
 - Limite de tamanho do contexto enviado por chamada e o que cortar quando ele for excedido (D17).
 - Regra de formação do `identificador` estável das regras e formato da exportação opcional do catálogo para o repositório (D5).
-- Campos e formato do `.lastro.yml` (D18).
 - Detalhes do modelo de dados: tipos, índices e migrações; procedimento de reprocessamento de tarefas em erro.
 - Escolhas de implementação do React explicadas na seção 10.2: ferramentas, navegação e consultas à API.
 - Procedimento de recuperação de entregas de webhook com falha (RNF-OPE-06).

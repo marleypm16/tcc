@@ -1,8 +1,8 @@
 # Lastro — Especificação de requisitos
 
-Versão 0.8 · 11/11/2026 · rascunho para revisão (em aberto: D5, D14, D17, D18)
+Versão 0.9 · 12/11/2026 · rascunho para revisão (em aberto: D5, D14, D17)
 
-Este documento reúne os requisitos funcionais e não funcionais do Lastro, levantados a partir de [escopo-tcc.md](escopo-tcc.md), [arquitetura-tcc.md](arquitetura-tcc.md), [Mapa da arquitetura do TCC](<Mapa da arquitetura do TCC.md>) e dos capítulos 1, 3 e 4 revisados. As decisões já tomadas (D1–D4, D6–D13, D15, D16, D19, D20) foram incorporadas a esses documentos e estão resumidas na seção 10.1 da arquitetura. Aqui ficam apenas os pontos ainda em aberto (seção 6).
+Este documento reúne os requisitos funcionais e não funcionais do Lastro, levantados a partir de [escopo-tcc.md](escopo-tcc.md), [arquitetura-tcc.md](arquitetura-tcc.md), [Mapa da arquitetura do TCC](<Mapa da arquitetura do TCC.md>) e dos capítulos 1, 3 e 4 revisados. As decisões já tomadas (D1–D4, D6–D13, D15, D16, D18–D20) foram incorporadas a esses documentos e estão resumidas na seção 10.1 da arquitetura. Aqui ficam apenas os pontos ainda em aberto (seção 6).
 
 ## 1. Convenções
 
@@ -33,14 +33,14 @@ Manter a documentação das regras de negócio de repositórios Python no GitHub
 | **Desenvolvedor** | Abre e atualiza PRs no repositório acompanhado. | GitHub |
 | **Revisor** | Pessoa com permissão de escrita no repositório. Recebe o comentário no PR, revisa as propostas no portal (aprova, edita ou rejeita) e realiza o merge. | GitHub e portal |
 | **Consultor do portal** | Qualquer pessoa com acesso ao repositório no GitHub que consulta catálogo, histórico, propostas e grafo. Inclui novos integrantes da equipe. | Portal |
-| **Administrador da instalação** | Instala a GitHub App nos repositórios, o que dispara a geração da base inicial, e pode dispará-la também pelo terminal. | GitHub e terminal |
+| **Administrador da instalação** | Pessoa com permissão de administração no repositório. Instala a GitHub App, o que dispara a geração da base inicial (também disponível pelo terminal), e escolhe no portal a branch acompanhada (D18). | GitHub, portal e terminal |
 | **Pesquisador** | Executa o replay histórico, as linhas de base e coleta as métricas (o autor do TCC). | Terminal |
 | **GitHub** (sistema) | Envia webhooks, fornece código e recebe comentários e status. | API e worker |
 | **Gemini** (sistema) | Interpreta as mudanças e redige as regras. | Worker |
 
 ### 2.3 Fluxos cobertos
 
-1. **Geração da base:** instalação da App (ou comando de terminal) → AST → grafo + catálogo inicial → PR de ativação com `.lastro.yml` → revisão no portal → merge → catálogo vigente.
+1. **Geração da base:** instalação da App (ou comando de terminal) → leitura da branch de referência → AST → grafo + catálogo inicial → PR de ativação com `.lastro.yml` → revisão no portal → merge → catálogo vigente.
 2. **Análise por PR:** webhook → tarefa → comparação de AST → contexto → Gemini → validação → propostas no banco → comentário com link para o portal + status no PR.
 3. **Revisão:** portal → aprovar, editar ou rejeitar cada proposta (rejeitar = descartar ou refazer com motivo) → status do PR atualizado.
 4. **Incorporação:** merge → tarefa `pr_mergeado` → propostas aprovadas viram versões vigentes das regras.
@@ -53,9 +53,9 @@ Manter a documentação das regras de negócio de repositórios Python no GitHub
 
 | ID | Requisito | Prioridade | Fonte | Inc. |
 |---|---|---|---|---|
-| RF-AN-01 | O sistema deve converter cada arquivo Python em AST com o `ast` da versão instalada, sem executar o código nem instalar suas dependências. | Essencial | A§3, C4.2 | 1 |
+| RF-AN-01 | O sistema deve converter cada arquivo Python em AST com o `ast` da versão instalada, sem executar o código nem instalar suas dependências. São considerados arquivos Python apenas os de extensão `.py`; demais linguagens, stubs (`.pyi`), notebooks (`.ipynb`) e scripts sem extensão ficam fora da análise, sem configuração. | Essencial | A§3, C4.2, D18 | 1 |
 | RF-AN-02 | O sistema deve extrair, por arquivo: módulo, classes, funções, métodos, constantes de nível de módulo, importações e chamadas feitas no corpo de cada unidade. | Essencial | A§3, C4.4.1 | 1 |
-| RF-AN-03 | O sistema deve identificar cada unidade de código (função ou método) pelo nome qualificado: caminho do módulo + classe (quando houver) + nome. | Essencial | C4.4.1 | 1 |
+| RF-AN-03 | O sistema deve identificar cada unidade de código (função ou método) pelo nome qualificado: caminho do módulo + classe (quando houver) + nome. O caminho do módulo é relativo à raiz de código que contém o arquivo (RF-AN-15). | Essencial | C4.4.1, D18 | 1 |
 | RF-AN-04 | O sistema deve registrar como **não analisado** o arquivo que não puder ser convertido em AST e marcar a análise como **incompleta**, sem tratar o arquivo como ausência de regras ou de mudança. | Essencial | A§3, C4.4.1 | 1 |
 | RF-AN-05 | O sistema deve comparar duas versões de um conjunto de arquivos e classificar cada unidade como adicionada, removida ou alterada, pareando as unidades pelo nome qualificado. | Essencial | A§3, C4.5.1 | 1 |
 | RF-AN-06 | A comparação deve ignorar posição (linha/coluna), formatação, espaçamento e comentários, considerando alterada apenas a unidade cuja árvore mudou. | Essencial | C4.5.1 | 1 |
@@ -66,7 +66,8 @@ Manter a documentação das regras de negócio de repositórios Python no GitHub
 | RF-AN-11 | Para cada unidade adicionada, removida ou alterada, o sistema deve selecionar o contexto: código nas duas versões, regras vinculadas à unidade e unidades vizinhas no grafo (quem chama e quem é chamado) com suas regras. A profundidade é fixa em **um nível**: apenas vizinhos diretos (D7). | Essencial | A§3, C4.5.2, D7 | 1–2 |
 | RF-AN-12 | O sistema deve distinguir, no resultado, as unidades **alteradas** das unidades de **contexto**; vizinhas nunca são tratadas como alteradas. | Essencial | A§7, C4.5.2 | 1 |
 | RF-AN-13 | O sistema deve permitir executar a comparação de duas versões pelo terminal, sem banco nem GitHub, exibindo as diferenças estruturais e o contexto. | Essencial | A§9 | 1 |
-| RF-AN-14 | O sistema deve excluir arquivos de teste da extração e da comparação (ex.: diretórios `tests/`, arquivos `test_*.py`, `*_test.py` e `conftest.py`), com o critério configurável no arquivo `.lastro.yml` do repositório (RF-DOC-15). *Provisório (D6).* | Essencial | RN-02, D6 | 1 |
+| RF-AN-14 | O sistema deve excluir arquivos de teste da extração e da comparação (ex.: diretórios `tests/`, arquivos `test_*.py`, `*_test.py` e `conftest.py`), com o critério configurável em `ignorar.testes` no `.lastro.yml` (RF-DOC-19). *Padrões provisórios (D6).* | Essencial | RN-02, D6, D18 | 1 |
+| RF-AN-15 | O sistema deve analisar apenas os arquivos dentro das raízes de código (`raizes`) e fora dos caminhos ignorados (`ignorar.caminhos`) do `.lastro.yml`. Sem raízes configuradas, a raiz é o repositório inteiro. Os padrões são relativos à raiz do repositório e aceitam `*` e `**`. | Essencial | D18 | 1 |
 
 ### 3.2 Interpretação por IA (`interpretacao`)
 
@@ -81,6 +82,7 @@ Manter a documentação das regras de negócio de repositórios Python no GitHub
 | RF-IA-07 | O acesso ao Gemini deve ficar atrás de uma porta (`InterpretadorMudancas`), com o SDK isolado em um adaptador, para que o pipeline possa ser testado com fakes. | Essencial | A§5, CLAUDE.md | 2 |
 | RF-IA-08 | Cada chamada deve registrar modelo, versão do prompt, parâmetros, tokens de entrada e de saída e duração. | Essencial | A§5, C4.5.4 | 2 |
 | RF-IA-09 | Ao refazer uma proposta rejeitada (RF-PO-14), o prompt deve incluir, além do contexto original, a proposta rejeitada e o motivo escrito pelo revisor. A nova proposta substitui a anterior, que permanece no histórico. | Importante | D2 | 5 |
+| RF-IA-10 | Quando o `.lastro.yml` trouxer `dominio.descricao`, o texto deve entrar na parte de contexto do prompt; quando trouxer `dominio.idioma`, as regras devem ser redigidas nesse idioma (padrão: português). | Desejável | D18 | 2 |
 
 ### 3.3 Catálogo e documentação (`documentacao`)
 
@@ -89,7 +91,7 @@ Manter a documentação das regras de negócio de repositórios Python no GitHub
 | RF-DOC-01 | Cada regra do catálogo deve ter: identificador, título, descrição, módulo, unidade de código, arquivo e intervalo de linhas, commit do código, PR de origem e situação (`vigente` ou `removida`). | Essencial | C4.3 | 2 |
 | RF-DOC-02 | O identificador da regra deve ser atribuído na criação, ser independente da posição no código e se manter quando a unidade mudar de linha, arquivo ou nome. | Essencial | E, C4.3 | 2 |
 | RF-DOC-03 | O sistema deve poder exportar o catálogo vigente em **JSON** e **Markdown** para o repositório, como cópia de leitura. Formato, caminhos e mecanismo de publicação seguem D5. | Desejável | A§6, C4.3.1, D2, D5 | 5 |
-| RF-DOC-04 | O sistema deve gerar a base inicial de um repositório a partir de uma versão de referência: catálogo inicial por módulo e unidade + grafo de módulos. | Essencial | E, C3.2.1, C4.4 | 2 |
+| RF-DOC-04 | O sistema deve gerar a base inicial de um repositório a partir do commit mais recente da branch de referência (RF-DOC-21): catálogo inicial por módulo e unidade + grafo de módulos. | Essencial | E, C3.2.1, C4.4, D18 | 2 |
 | RF-DOC-05 | A base inicial deve passar por revisão no portal e pelo merge do PR de ativação antes de ser tratada como documentação vigente (RF-DOC-15). | Essencial | E, A§9, D4 | 4/5 |
 | RF-DOC-06 | Na incorporação, o sistema deve aplicar ao catálogo as propostas **aprovadas** (incluir, alterar ou remover regras), usando o texto editado pelo revisor quando houver. | Essencial | A§6, D2 | 5 |
 | RF-DOC-07 | Após o merge, o sistema deve incorporar as propostas aprovadas do PR, criando uma nova versão para cada regra afetada, vinculada ao commit efetivamente incorporado. | Essencial | A§6, C4.6.4, D2 | 5 |
@@ -100,17 +102,23 @@ Manter a documentação das regras de negócio de repositórios Python no GitHub
 | RF-DOC-12 | Módulos removidos devem ser marcados como inativos, sem exclusão, preservando as versões antigas das regras. | Importante | A§7 | 5 |
 | RF-DOC-13 | As propostas originais do modelo devem ser imutáveis e guardadas separadamente das decisões do revisor e das versões incorporadas. | Essencial | A§6, A§7 | 3 |
 | RF-DOC-14 | A geração da base inicial deve poder ser disparada de duas formas: automaticamente, quando a GitHub App é instalada no repositório, e manualmente, por comando de terminal (usado também pelo replay). | Essencial | D15 | 2/4 |
-| RF-DOC-15 | Após gerar a base inicial, o bot deve abrir na branch principal um **PR de ativação** ("Lastro: base inicial"), que adiciona o arquivo de configuração `.lastro.yml` e traz na descrição o resumo do catálogo inicial e o link para revisá-lo no portal. As regras da base são as propostas desse PR e seguem o mesmo fluxo de revisão dos demais; a base se torna vigente com o merge, vinculada ao commit de referência. | Essencial | D4, D2 | 4/5 |
+| RF-DOC-15 | Após gerar a base inicial, o bot deve abrir na branch de referência um **PR de ativação** ("Lastro: base inicial"), que adiciona o arquivo de configuração `.lastro.yml` com a configuração usada na geração (os padrões, quando o repositório ainda não tiver o arquivo) e traz na descrição o resumo do catálogo inicial e o link para revisá-lo no portal. As regras da base são as propostas desse PR e seguem o mesmo fluxo de revisão dos demais; a base se torna vigente com o merge, vinculada ao commit de referência. | Essencial | D4, D2, D18 | 4/5 |
 | RF-DOC-16 | Quando chegar uma nova versão do PR, as decisões já tomadas sobre unidades cujo código não mudou entre as duas versões são mantidas. As demais propostas voltam para `pendente`, e o portal mostra a decisão anterior como referência. | Importante | D16 | 5 |
 | RF-DOC-17 | PR fechado sem merge descarta suas propostas e decisões, que permanecem no histórico para a avaliação. | Essencial | RN-06, D2 | 5 |
 | RF-DOC-18 | Se o PR de ativação for fechado sem merge, o repositório volta à situação `inativo`. A reativação pode ser pedida pelo portal (RF-PO-18) ou pelo terminal e gera uma nova base e um novo PR de ativação. | Importante | D20 | 4/5 |
+| RF-DOC-19 | O `.lastro.yml` deve aceitar os campos `versao` (obrigatório; formato atual: `1`), `raizes` (lista de diretórios com código Python), `ignorar.testes` (padrões de arquivos de teste; substitui o padrão do D6), `ignorar.caminhos` (demais padrões a ignorar, como migrações, scripts e código gerado) e `dominio` (opcional: `descricao` e `idioma`). Modelo, prompt, cotas e limites de contexto não fazem parte do arquivo: ficam na configuração do servidor (RNF-RAS-04). | Essencial | D18 | 1–2 |
+| RF-DOC-20 | Cada análise deve usar o `.lastro.yml` do commit base (`base_sha`) do PR, de modo que um PR não altere a configuração da própria análise. Arquivo ausente: valem os padrões. Arquivo inválido (YAML malformado, campo ou versão desconhecidos, raízes que geram o mesmo nome de módulo): a análise falha sem novas tentativas, o status fica `error` e o comentário no PR explica o problema. A configuração usada é registrada na análise (RNF-RAS-02). | Essencial | D18 | 2–4 |
+| RF-DOC-21 | Cada repositório acompanha **uma** branch de referência, guardada no banco. O padrão é a branch padrão do repositório no GitHub. O catálogo descreve essa branch: só PRs com destino a ela são analisados, e só merges nela são incorporados. | Essencial | D18 | 4 |
+| RF-DOC-22 | A troca da branch de referência gera uma nova base pela tarefa `gerar_base` e um novo PR de ativação na nova branch. Se houver PR de ativação aberto, o bot o fecha e descarta suas propostas, sem marcar o repositório como `inativo`. O catálogo anterior continua vigente para consulta até o merge do novo PR de ativação, quando a nova base o substitui; as versões anteriores permanecem no histórico. | Importante | D18, D20 | 4/5 |
+| RF-DOC-23 | Quando um commit no PR de ativação alterar o `.lastro.yml`, o sistema deve gerar a base novamente com a nova configuração, substituindo as propostas da base anterior. As decisões já tomadas sobre unidades que continuarem com o mesmo código são mantidas (RF-DOC-16). | Importante | D18, D16 | 4/5 |
+| RF-DOC-24 | Mudanças na lista de arquivos ignorados depois da ativação valem para as análises seguintes. As regras vigentes de arquivos que passaram a ser ignorados continuam no catálogo, mas deixam de ser acompanhadas, e o portal as sinaliza. | Desejável | D18 | 5–6 |
 
 ### 3.4 Integração com o GitHub (`integracao_github`)
 
 | ID | Requisito | Prioridade | Fonte | Inc. |
 |---|---|---|---|---|
 | RF-GH-01 | O sistema deve receber webhooks em `POST /webhooks/github` e validar a assinatura com o segredo compartilhado, rejeitando entregas inválidas. | Essencial | A§4, C4.6.1 | 4 |
-| RF-GH-02 | O sistema deve tratar os eventos `pull_request` conforme a tabela: `opened`, `reopened` e `synchronize` → `analisar_pr`; `closed` com merge → `pr_mergeado`; `closed` sem merge → registrar, descartar tarefas pendentes e aplicar RF-DOC-17. | Essencial | A§4, C4.6.1, D2 | 4 |
+| RF-GH-02 | O sistema deve tratar os eventos `pull_request` conforme a tabela: `opened`, `reopened` e `synchronize` → `analisar_pr`; `closed` com merge → `pr_mergeado`; `closed` sem merge → registrar, descartar tarefas pendentes e aplicar RF-DOC-17. PRs cujo destino não é a branch de referência (RF-DOC-21) são registrados como ignorados, com o motivo, sem tarefa nem comentário. | Essencial | A§4, C4.6.1, D2, D18 | 4 |
 | RF-GH-03 | Evento e tarefa devem ser gravados na mesma transação; a resposta ao GitHub só é enviada após o commit. Eventos ignorados podem ser registrados com o motivo, sem tarefa. | Essencial | A§4, C4.6.1 | 3–4 |
 | RF-GH-04 | ~~Reconhecer o `synchronize` causado pelo commit de documentação do próprio bot e não gerar tarefa.~~ *Removido (D2): o bot não faz mais commit na branch do PR.* | — | — | — |
 | RF-GH-05 | O worker deve obter um token de instalação com a chave privada da GitHub App para ler código, comentar e publicar status no repositório. | Essencial | A§4 | 4 |
@@ -122,7 +130,7 @@ Manter a documentação das regras de negócio de repositórios Python no GitHub
 | RF-GH-11 | A publicação de comentário e status deve ser idempotente: antes de criar, o worker verifica se a publicação para a mesma análise e commit já existe. | Essencial | A§4, C4.6.2 | 4 |
 | RF-GH-12 | ~~Preservar ajustes humanos feitos na branch ou apresentá-los como conflito.~~ *Removido (D8): a edição é feita só no portal.* | — | — | — |
 | RF-GH-13 | ~~Tratar a falta de permissão de escrita na branch (forks, branches protegidas).~~ *Removido (D9): o bot não escreve na branch; PRs de forks seguem o fluxo normal.* | — | — | — |
-| RF-GH-14 | Após o merge, o sistema deve resolver o commit incorporado conforme o tipo de merge (merge comum, squash ou rebase). | Essencial | A§6 | 5 |
+| RF-GH-14 | Após o merge na branch de referência, o sistema deve resolver o commit incorporado conforme o tipo de merge (merge comum, squash ou rebase). | Essencial | A§6, D18 | 5 |
 | RF-GH-15 | Enquanto o PR de ativação de um repositório não for mesclado, os demais PRs desse repositório não são analisados: o bot apenas comenta que a base inicial ainda está em revisão, com link para o PR de ativação e para o portal. | Essencial | D4 | 4 |
 | RF-GH-16 | O sistema deve tratar os eventos `installation` e `installation_repositories` (repositório adicionado) criando uma tarefa `gerar_base` para cada repositório. | Essencial | D4, D15 | 4 |
 | RF-GH-17 | O worker deve publicar no head do PR o status `lastro/documentacao`: `pending` enquanto houver propostas pendentes; `success` quando todas forem decididas ou quando não houver mudança de regra; `error` quando a análise falhar. O dono do repositório pode torná-lo obrigatório para bloquear o merge. | Essencial | D2 | 4 |
@@ -149,12 +157,13 @@ Manter a documentação das regras de negócio de repositórios Python no GitHub
 | ID | Requisito | Prioridade | Fonte | Inc. |
 |---|---|---|---|---|
 | RF-AC-01 | O portal deve exigir login com a conta do GitHub, pelo fluxo de autorização de usuário da GitHub App, sem armazenar senhas. | Essencial | A§7, C4.7 | 5 |
-| RF-AC-02 | Após o login, o sistema deve consultar os repositórios da instalação acessíveis à pessoa e registrar essa relação (`usuario_repositorio`), incluindo se ela tem permissão de escrita. | Essencial | A§7, D2 | 5 |
+| RF-AC-02 | Após o login, o sistema deve consultar os repositórios da instalação acessíveis à pessoa e registrar essa relação (`usuario_repositorio`), com o nível de permissão: `leitura`, `escrita` ou `admin`. | Essencial | A§7, D2, D18 | 5 |
 | RF-AC-03 | Todas as consultas do portal devem ser restritas aos repositórios acessíveis à pessoa autenticada. | Essencial | A§7, C4.7 | 5 |
 | RF-AC-04 | A permissão deve ser verificada novamente no GitHub quando `verificado_em` tiver mais de 1 h. | Importante | A§7, D12 | 5 |
 | RF-AC-05 | A pessoa deve poder encerrar a sessão (`POST /auth/logout`). | Importante | C4.7 | 5 |
 | RF-AC-06 | A sessão deve usar um cookie `HttpOnly`, `Secure` e `SameSite=Lax`, com duração de 8 h (o prazo do token de usuário da GitHub App). Ao expirar, a pessoa faz login novamente, sem renovação automática. | Importante | D12 | 5 |
 | RF-AC-07 | Somente pessoas com permissão de escrita no repositório podem aprovar, editar ou rejeitar propostas; as demais só consultam (RN-11). | Essencial | D2 | 5 |
+| RF-AC-08 | Somente pessoas com permissão de administração no repositório podem trocar a branch de referência (RN-12). | Importante | D18 | 5 |
 
 ### 3.7 Portal (`catalogo` + `documentacao` + frontend)
 
@@ -170,14 +179,15 @@ Manter a documentação das regras de negócio de repositórios Python no GitHub
 | RF-PO-08 | O portal deve indicar a versão do catálogo exibida e a data da última incorporação. | Essencial | A§6, C4.7 | 6 |
 | RF-PO-09 | Se um PR já foi mesclado mas sua tarefa `pr_mergeado` estiver pendente ou com erro, ou se ele ainda tiver propostas pendentes, o portal deve sinalizar a defasagem. | Importante | A§6, C4.7, D2 | 6 |
 | RF-PO-10 | O portal permite revisar propostas (RF-PO-13), inclusive as da base inicial (RF-DOC-15). Regras vigentes não são editadas diretamente, fora de uma proposta; essa edição fica como versão futura. | Essencial | D1, D2 | 5 |
-| RF-PO-11 | A API deve expor os endpoints do Quadro 10 do Cap. 4 (`/auth/github`, `/auth/github/callback`, `/auth/logout`, `/api/repositorios`, `/api/repositorios/{repo}/regras`, `.../regras/{id}`, `.../regras/{id}/historico`, `.../prs/{numero}`, `.../grafo`) e os de revisão: listar as propostas de um PR (inclusive o de ativação), aprovar (com ou sem edição), aprovar todas e rejeitar (descartar ou refazer), além do pedido de reativação de um repositório inativo. | Essencial | C4.7, D2 | 5–6 |
+| RF-PO-11 | A API deve expor os endpoints do Quadro 10 do Cap. 4 (`/auth/github`, `/auth/github/callback`, `/auth/logout`, `/api/repositorios`, `/api/repositorios/{repo}/regras`, `.../regras/{id}`, `.../regras/{id}/historico`, `.../prs/{numero}`, `.../grafo`) e os de revisão: listar as propostas de um PR (inclusive o de ativação), aprovar (com ou sem edição), aprovar todas e rejeitar (descartar ou refazer), além do pedido de reativação de um repositório inativo e da consulta e troca da branch de referência. | Essencial | C4.7, D2, D18 | 5–6 |
 | RF-PO-12 | A tela de **revisão do PR** deve listar as propostas do PR, separadas do catálogo vigente, com situação (`pendente`, `aprovada`, `editada`, `descartada`, `refazendo`), texto atual e proposto, código antes e depois e justificativa do modelo. Quem não pode revisar vê a mesma tela somente para leitura. | Essencial | E, D2, D3 | 5 |
 | RF-PO-13 | O revisor deve poder, para cada proposta: **aprovar**; **editar** o título e a descrição e aprovar; ou **rejeitar**. Deve ser possível aprovar todas as propostas pendentes de uma vez. | Essencial | E, C3.2.4, D2 | 5 |
 | RF-PO-14 | Ao rejeitar, o revisor escolhe entre **descartar** (não é mudança de regra) e **refazer com motivo**. O pedido de refazer cria uma tarefa `reanalisar_proposta` (RF-IA-09). O limite é de 3 recálculos por proposta; depois dele, restam editar ou descartar. | Importante | D2 | 5 |
 | RF-PO-15 | Decisões concorrentes sobre a mesma proposta devem ser detectadas por controle de versão: a segunda decisão é recusada com aviso, e a tela é recarregada. | Importante | D8 | 5 |
 | RF-PO-16 | O revisor pode incluir manualmente, durante a revisão de um PR, uma regra que o modelo não propôs (RN-09). | Desejável | A§7, D2 | 5 |
 | RF-PO-17 | Toda decisão deve registrar quem decidiu, quando, o tipo de decisão e o texto final ou o motivo. | Essencial | RNF-RAS-01, D2 | 5 |
-| RF-PO-18 | Para um repositório inativo, o portal deve exibir a situação e, a quem tem permissão de escrita, a opção de reativá-lo, que cria uma tarefa `gerar_base`. | Importante | D20 | 5 |
+| RF-PO-18 | Para um repositório inativo, o portal deve exibir a situação e, a quem tem permissão de escrita, a opção de reativá-lo, que cria uma tarefa `gerar_base`. Quem tem permissão de administração pode escolher, na reativação, outra branch de referência. | Importante | D20, D18 | 5 |
+| RF-PO-19 | O portal deve ter uma tela de **configuração do repositório**, que mostra a branch de referência e a configuração do `.lastro.yml` em vigor (somente leitura) e permite a quem tem permissão de administração trocar a branch (RF-DOC-22), com aviso de que a troca gera uma nova base. | Importante | D18 | 5 |
 
 ### 3.8 Avaliação (`avaliacao`)
 
@@ -197,6 +207,7 @@ Manter a documentação das regras de negócio de repositórios Python no GitHub
 | RF-AV-11 | O sistema deve calcular a concordância entre avaliadores (kappa de Cohen) quando houver segundo avaliador. | Desejável | E, C3.3.2 | 7 |
 | RF-AV-12 | O sistema deve permitir conferir manualmente a acurácia estrutural do grafo em uma amostra de módulos (exportação da amostra para conferência). | Desejável | C3.3.3 | 7 |
 | RF-AV-13 | O replay deve poder reproduzir cada interpretação a partir dos trechos gravados (`trechos_codigo`), sem consultar o GitHub. | Importante | A§7 | 7 |
+| RF-AV-15 | No replay, a branch e a configuração equivalente ao `.lastro.yml` são passadas pelo comando de terminal e mantidas fixas em toda a sequência de PRs, já que os repositórios históricos não têm o arquivo. | Essencial | D18 | 7 |
 
 ## 4. Regras de negócio da ferramenta
 
@@ -213,6 +224,9 @@ Manter a documentação das regras de negócio de repositórios Python no GitHub
 | RN-09 | Uma versão de regra criada pelo revisor, sem proposta correspondente, é válida e fica sem `proposta_id`. | A§7 |
 | RN-10 | Análise incompleta (arquivo não parseado, estrutura não tratada) não pode ser interpretada como "sem mudança de negócio". | A§3 |
 | RN-11 | Só quem tem permissão de escrita no repositório no GitHub pode decidir sobre propostas. | D2 |
+| RN-12 | Só quem tem permissão de administração no repositório no GitHub pode trocar a branch de referência. | D18 |
+| RN-13 | O catálogo de um repositório descreve uma única branch, a de referência. PRs e merges em outras branches não alteram o catálogo. | D18 |
+| RN-14 | A configuração que vale para um PR é a do seu commit base. Uma mudança no `.lastro.yml` só passa a valer depois do merge, com exceção do PR de ativação (RF-DOC-23). | D18 |
 
 ## 5. Requisitos não funcionais
 
@@ -255,7 +269,7 @@ Manter a documentação das regras de negócio de repositórios Python no GitHub
 | ID | Requisito | Prioridade | Fonte |
 |---|---|---|---|
 | RNF-RAS-01 | Toda versão de regra deve ser rastreável até o PR, o commit de código, a proposta original (quando houver), a decisão do revisor e os trechos de código que a sustentaram. | Essencial | E, A§7, D2 |
-| RNF-RAS-02 | Cada análise deve registrar `base_sha`, `head_sha`, modelo, versão do prompt, parâmetros, tokens e duração, para que o experimento possa ser reproduzido. | Essencial | A§5 |
+| RNF-RAS-02 | Cada análise deve registrar `base_sha`, `head_sha`, modelo, versão do prompt, parâmetros, configuração do repositório (`.lastro.yml` usado), tokens e duração, para que o experimento possa ser reproduzido. | Essencial | A§5, D18 |
 | RNF-RAS-03 | Versão do Python e das dependências devem ser fixadas (`.python-version`, `uv.lock`, `pnpm-lock.yaml`). | Essencial | A§3 |
 | RNF-RAS-04 | Modelo e configuração devem ser mantidos constantes nas comparações; qualquer mudança é registrada. | Essencial | A§5 |
 | RNF-RAS-05 | Todas as datas são armazenadas com fuso (`timestamptz`, `datetime.now(UTC)`). | Essencial | CLAUDE.md |
@@ -314,7 +328,6 @@ Itens que a arquitetura (seção 10.3) mantém em aberto. Os números D1–D20 s
 | D5 | **Identificador estável e exportação.** | Formato do identificador da regra: `RN-<modulo>-<nnn>` (legível, mas preso ao nome do módulo) ou código curto (ex.: `r-7f3a`). Com D2, os arquivos no repositório passam a ser só uma exportação desejável: falta definir formato, caminhos e como publicar (PR próprio após o merge?). | RF-DOC-01–03 |
 | D14 | **Cotas do Gemini.** *(Adiado.)* | Verificado por Marley: o nível gratuito permite **250 requisições por dia**. A base inicial faz hoje uma chamada por unidade (RF-IA-06) e é o maior consumo. Falta decidir como a ferramenta respeita esse limite e definir o protocolo do piloto. | RNF-DES-04, RF-IA-06, RF-AV-* |
 | D17 | **Limite de tamanho do contexto.** *(Adiado.)* | Com um nível fixo (D7), uma função muito chamada pode trazer dezenas de vizinhas. *Proposta:* limite de tokens por chamada, configurável; acima dele, manter as vizinhas que já têm regras vinculadas e cortar as demais, registrando o corte como limitação da análise. | RF-AN-11, RNF-DES-04 |
-| D18 | **Conteúdo do `.lastro.yml`.** *(Adiado.)* | *Proposta:* versão do formato, branch de referência, padrões de arquivos de teste e de diretórios ignorados. A ferramenta lê o arquivo da branch de referência a cada análise. | RF-AN-14, RF-DOC-15 |
 
 ## 7. Fora do escopo
 
@@ -323,14 +336,15 @@ Itens que a arquitetura (seção 10.3) mantém em aberto. Os números D1–D20 s
 - Atualização de documentos escritos por humanos fora do catálogo do Lastro.
 - Integração com agentes de IA (caminho C), tratada como trabalho futuro.
 - Edição direta de regras vigentes pelo portal, fora da revisão de um PR (versão futura, D1).
+- Acompanhar mais de uma branch por repositório, com um catálogo por branch (D18).
 - Microsserviços e broker de mensagens.
 
 ## 8. Rastreabilidade com os objetivos específicos
 
 | Objetivo específico (Cap. 1) | Requisitos principais |
 |---|---|
-| 1. Gerar catálogo inicial e grafo a partir da AST | RF-AN-01–10, RF-AN-14, RF-IA-06, RF-DOC-01–05, RF-DOC-14–15 |
-| 2. Detectar mudanças a cada PR e propor atualizações com IA | RF-AN-05–12, RF-IA-01–09, RF-DOC-06, RN-01–04 |
-| 3. Revisão humana das propostas, incorporando só o aprovado e integrado | RF-GH-01–18, RF-DOC-07–18, RF-PR-01–11, RF-PO-12–17, RN-05–06, RN-11 |
-| 4. Portal com catálogo, histórico por PR e grafo | RF-AC-01–07, RF-PO-01–11, RF-PO-18 |
-| 5. Avaliar detecção, corretude e atualização com replay e linhas de base | RF-AV-01–14, RNF-RAS-01–04 |
+| 1. Gerar catálogo inicial e grafo a partir da AST | RF-AN-01–10, RF-AN-14–15, RF-IA-06, RF-DOC-01–05, RF-DOC-14–15, RF-DOC-19–20 |
+| 2. Detectar mudanças a cada PR e propor atualizações com IA | RF-AN-05–12, RF-IA-01–10, RF-DOC-06, RN-01–04 |
+| 3. Revisão humana das propostas, incorporando só o aprovado e integrado | RF-GH-01–18, RF-DOC-07–18, RF-DOC-21–24, RF-PR-01–11, RF-PO-12–17, RN-05–06, RN-11–14 |
+| 4. Portal com catálogo, histórico por PR e grafo | RF-AC-01–08, RF-PO-01–11, RF-PO-18–19 |
+| 5. Avaliar detecção, corretude e atualização com replay e linhas de base | RF-AV-01–15, RNF-RAS-01–04 |
