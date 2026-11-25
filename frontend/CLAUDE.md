@@ -1,8 +1,8 @@
-# Portal do Lastro (frontend)
+# Portal do Códice (frontend)
 
-Portal React **somente de consulta**: catálogo de regras, histórico por PR e grafo de módulos, com login pelo GitHub. Não há edição de documentação aqui; revisão e aprovação acontecem no GitHub (ver `docs/arquitetura-tcc.md`, seções 7 e 10.2).
+Portal React de **consulta e revisão de propostas**: catálogo de regras de negócio, aprovação/ajuste/rejeição de propostas vinculadas a PRs (acessadas diretamente pelo link publicado no comentário do PR), histórico por PR e grafo de módulos, com login pelo GitHub (ver `docs/arquitetura-tcc.md`, seções 6, 7 e 10.2).
 
-Stack: React 19 + TypeScript 7 + Vite, **pnpm**, Biome (lint + formatação), tsc. Grafo com Cytoscape.js. Não adicione bibliotecas (roteador, cliente de dados, UI kit, CSS-in-JS) sem perguntar.
+Stack: React 19 + TypeScript 7 + Vite 8, **pnpm**, Biome (lint + formatação), tsc. Grafo com Cytoscape.js. Não adicione bibliotecas (roteador, cliente de dados, UI kit, CSS-in-JS) sem perguntar.
 
 ## Regra principal: componente desenha, hook pensa
 
@@ -12,9 +12,9 @@ Todo componente é **apenas visual**: recebe dados e callbacks prontos e devolve
 | ------------------------------------------------------------------------ | --------------------------------------------------------------------------------------- |
 | JSX, classes CSS, textos                                                 | `useState`, `useEffect`, `useReducer`, `useRef`, `useMemo`, `useCallback`, `useContext` |
 | Chamar **um** hook da própria funcionalidade e repassar o resultado      | Chamadas à API (via `api.ts`) e estados de carregamento/erro                            |
-| Escolher entre estados já calculados (`if (estado.tipo === 'erro') ...`) | Filtros, ordenação, paginação, derivação de dados                                       |
+| Escolher entre estados já calculados (`if (estado.tipo === 'erro') ...`) | Filtros, ordenação, paginação, derivação de dados e envio de revisão                    |
 | `useId` (acessibilidade)                                                 | Integração com Cytoscape, `localStorage`, URL, timers                                   |
-| Composição de outros componentes                                         | Handlers com regra (`aoSelecionarRegra`, `aoMudarFiltro`)                               |
+| Composição de outros componentes                                         | Handlers com regra (`aoSelecionarRegra`, `aoAprovarProposta`, `aoMudarFiltro`)          |
 
 Isso é **verificado pelo Biome**: em `src/**/componentes/**` e `src/app/**`, importar hooks de estado/efeito do `react` ou importar `api` é erro. Não silencie com `// biome-ignore`; mova o código para um hook.
 
@@ -50,7 +50,7 @@ src/
   main.tsx                       # monta a aplicação
   app/                           # App, rotas, provedores (só composição)
   funcionalidades/
-    <nome>/                      # catalogo, historico, grafo, acesso
+    <nome>/                      # catalogo, revisao, historico, grafo, acesso
       componentes/               # PascalCase.tsx, só visual
       hooks/                     # useAlgo.ts, toda a lógica
       api.ts                     # funções tipadas que chamam /api/...
@@ -61,7 +61,7 @@ src/
     hooks/                       # hooks genéricos (useCarregavel, useDebounce)
 ```
 
-- As funcionalidades espelham os módulos do backend (`catalogo`, `acesso`...). Uma funcionalidade pode importar de `compartilhado/`, mas não de outra funcionalidade; se precisar, mova para `compartilhado/`.
+- Uma funcionalidade pode importar de `compartilhado/`, mas não de outra funcionalidade; se precisar, mova para `compartilhado/`.
 - Sem barrel files (`index.ts` reexportando tudo). Importe do arquivo.
 - Só exportações nomeadas (`export function X`); `export default` é erro, exceto em `*.config.ts`.
 
@@ -69,8 +69,8 @@ src/
 
 - `fetch` é proibido pelo Biome fora de `src/compartilhado/api/cliente.ts`.
 - Toda URL começa com `/api/...` (proxy do Vite em dev; mesma origem em produção). Nunca `http://localhost:8000`.
-- `api.ts` de cada funcionalidade expõe funções tipadas (`listarRegras(repositorioId)`). A resposta chega como `unknown` e é **validada/estreitada** antes de virar tipo de domínio; nada de `as Regra`.
-- Os tipos mantêm os nomes de campo do JSON da API, que segue `docs/arquitetura-tcc.md` seção 7 (português, snake_case: `versao_sincronizada`). Não converta para camelCase.
+- `api.ts` de cada funcionalidade expõe funções tipadas (`listarRegras(repositorioId)`, `revisarProposta(propostaId, decisao)`). A resposta chega como `unknown` e é **validada/estreitada** antes de virar tipo de domínio; nada de `as Regra`.
+- Os tipos mantêm os nomes de campo do JSON da API, que segue `docs/arquitetura-tcc.md` seção 7 (português, snake_case: `revisado_em`, `versao_atual_id`). Não converta para camelCase.
 - Segredos nunca chegam ao frontend. Não use `import.meta.env` para tokens.
 
 ## TypeScript estrito
@@ -93,9 +93,9 @@ Configuração em `biome.json`: preset `recommended`, domínio React completo, e
 
 ## Convenções
 
-- Português nos identificadores de domínio, textos da interface e nomes de arquivo (`CatalogoRegras.tsx`, `useHistoricoPr.ts`). Prefixo `use` e termos técnicos ficam em inglês.
-- Handlers recebidos por prop: `aoAlgo` (`aoSelecionar`); funções internas do hook: verbo (`selecionar`).
-- Toda tela trata os três estados: carregando, erro e vazio. A defasagem da sincronização (merge feito, tarefa pendente/erro) deve ficar visível (arquitetura, seção "Portal de consulta e histórico").
+- Português nos identificadores de domínio, textos da interface e nomes de arquivo (`CatalogoRegras.tsx`, `RevisaoPr.tsx`, `useHistoricoPr.ts`). Prefixo `use` e termos técnicos ficam em inglês.
+- Handlers recebidos por prop: `aoAlgo` (`aoSelecionar`, `aoAprovar`); funções internas do hook: verbo (`selecionar`, `aprovar`).
+- Toda tela trata os três estados: carregando, erro e vazio. Pendências de revisão (incluindo PRs já mergeados aguardando aprovação) e defasagens de processamento devem ficar visíveis (arquitetura, seção 6).
 - Acessibilidade: elementos semânticos (`button`, `nav`, `table`), `alt` em imagens, rótulo em campos. O domínio React do Biome cobre parte disso.
 - CSS simples por enquanto (`index.css` + arquivos por componente). Cores como variáveis CSS em `:root`.
 

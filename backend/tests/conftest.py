@@ -10,7 +10,7 @@ import pytest
 
 DATABASE_URL_TESTES = os.environ.get(
     "DATABASE_URL_TESTES",
-    "postgresql+psycopg://lastro:lastro@localhost:5432/lastro_testes",
+    "postgresql+psycopg://codice:codice@localhost:5432/codice_testes",
 )
 
 

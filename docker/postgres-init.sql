@@ -1,1 +1,1 @@
-CREATE DATABASE lastro_testes OWNER lastro;
+CREATE DATABASE codice_testes OWNER codice;

@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from lastro.entrypoints.api.app import criar_app
+from codice.api.app import criar_app
 
 
 def test_saude_responde_ok() -> None:

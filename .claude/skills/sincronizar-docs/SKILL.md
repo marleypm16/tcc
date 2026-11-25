@@ -1,6 +1,6 @@
 ---
 name: sincronizar-docs
-description: Compara o código do Lastro (ou um diff/branch) com docs/arquitetura-tcc.md e os capítulos revisados do TCC e lista as divergências e o que precisa ser atualizado no texto. Não edita o texto do TCC sem aprovação. Use quando o usuário perguntar "o código ainda bate com a arquitetura?", "o que mudar no Cap. 4?", ao fim de uma etapa da implementação ou antes de atualizar o documento do TCC.
+description: Compara o código do Códice (ou um diff/branch) com docs/arquitetura-tcc.md e os capítulos revisados do TCC e lista as divergências e o que precisa ser atualizado no texto. Não edita o texto do TCC sem aprovação. Use quando o usuário perguntar "o código ainda bate com a arquitetura?", "o que mudar no Cap. 4?", ao fim de uma etapa da implementação ou antes de atualizar o documento do TCC.
 ---
 
 # /sincronizar-docs

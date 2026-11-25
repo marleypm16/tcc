@@ -1,81 +1,82 @@
-# TCC — Definição da arquitetura e implementação
+# Códice — Definição da arquitetura e implementação
 
-Este documento consolida a arquitetura definida no [Mapa da arquitetura do TCC](<Mapa da arquitetura do TCC.md>) para implementar a aplicação de documentação viva descrita em [escopo-tcc.md](escopo-tcc.md).
+Este documento consolida a arquitetura da plataforma **Códice**, aplicação de documentação viva de regras de negócio descrita em [escopo-tcc.md](escopo-tcc.md).
 
-As decisões são: **API e worker em Python**, **analisador como módulo importado pelo worker**, **fila de tarefas no PostgreSQL**, **um único banco**, **Gemini 3.6 Flash como IA**, **portal React somente para consulta, com login pelo GitHub** e **hospedagem da aplicação na Render, com PostgreSQL em uma oferta gratuita a definir**. A documentação será gravada na branch do próprio PR e revisada no GitHub. O merge incorpora código e documentação; depois dele, o worker atualiza a cópia consultada pelo portal.
+As decisões são: **API e worker em Python em um monólito modular plano**, **núcleo de análise estática (`analise/`) puro e importado diretamente**, **fila de tarefas no PostgreSQL**, **um único banco PostgreSQL como fonte oficial do catálogo (exportável em JSON e Markdown)**, **Gemini 3.6 Flash como IA**, **comentário no PR com resumo das alterações sugeridas e link direto para revisão no portal**, **portal React para consulta e revisão/aprovação com login pelo GitHub** e **hospedagem da aplicação na Render, com PostgreSQL em uma oferta gratuita a definir**.
 
-Para o fluxo de revisão, esta definição adota a decisão do mapa: revisão e aprovação no GitHub. As referências à revisão pelo portal em `escopo-tcc.md` precisam ser alinhadas a essa decisão.
+No fluxo de revisão, o bot **não faz commit automático na branch do PR**: publica apenas o comentário resumido com o link para o portal. A aceitação, o ajuste ou a rejeição das propostas acontecem no portal, e as propostas aprovadas passam a compor o catálogo vigente quando o PR é incorporado (*merge*) à branch de referência.
 
 ## 1. Direção da arquitetura
 
-A aplicação será um **monólito modular com processamento assíncrono**: um processo web e um processo worker, no mesmo repositório, compartilhando módulos Python e o mesmo PostgreSQL.
+A aplicação é um **monólito modular plano com processamento assíncrono**: um processo web e um processo worker, no mesmo repositório, compartilhando módulos Python diretos (sem camadas artificiais excessivas) e o mesmo PostgreSQL.
 
 | Processo | Responsabilidade |
 |---|---|
-| **1 — API Python/FastAPI** | Receber e validar webhooks, registrar eventos e tarefas, autenticar as pessoas no portal e disponibilizar os endpoints de consulta. |
-| **2 — Worker Python** | Reservar tarefas no banco, obter versões do código, chamar o analisador, consultar o Gemini, publicar documentação e comentários no PR e sincronizar o catálogo após o merge. |
+| **1 — API Python/FastAPI** | Receber e validar webhooks, registrar eventos e tarefas, autenticar as pessoas no portal pelo GitHub, expor endpoints de consulta (catálogo, histórico, grafo, exportação) e registrar decisões de revisão/aprovação de propostas. |
+| **2 — Worker Python** | Reservar tarefas no banco, obter versões do código via GitHub, chamar o núcleo `analise/`, consultar o Gemini, publicar o comentário resumo + link no PR e efetivar propostas aprovadas no catálogo após o *merge*. |
 
-O analisador será um módulo Python importado pelo worker. A coordenação da análise, a interpretação pela IA e a publicação permanecem no mesmo processo para manter a implementação compatível com o escopo do TCC.
+O núcleo de análise (`analise/`) é um módulo Python puro (sem I/O), importado diretamente pelo worker, pela CLI e pelo experimento de replay. Os demais módulos (`catalogo/`, `processamento/`, `ia/`, `github/`, `avaliacao/`, `api/`, `db/`) organizam o código de forma plana por responsabilidade, utilizando SQLAlchemy 2 e Pydantic diretamente onde fazem sentido.
 
-A API e o worker se coordenam pelas tarefas e pelos dados persistidos no PostgreSQL. O portal React executa no navegador e consulta a API por HTTP/JSON. A proposta inicial é servir seu build estático pela própria API; durante o desenvolvimento, o frontend poderá ter um servidor separado.
+A API e o worker se coordenam pelas tarefas e pelos dados persistidos no PostgreSQL. O portal React executa no navegador e consulta/envia revisões à API por HTTP/JSON. A proposta inicial é servir seu build estático pela própria API; durante o desenvolvimento, o frontend utiliza o servidor do Vite com proxy `/api`.
 
 ```mermaid
 flowchart LR
-    PORTAL["Portal React no navegador"]
-    GH["GitHub"]
-    IA["Gemini API"]
-    subgraph APP["Aplicação: mesmo repositório e módulos Python"]
+    PORTAL["Portal React (Consulta e Revisão)"]
+    GH["GitHub (App + Webhooks)"]
+    IA["Gemini 3.6 Flash API"]
+    subgraph APP["Códice — Monólito Modular Python"]
         API["Processo 1: API FastAPI"]
-        WORKER["Processo 2: worker com analisador ast"]
+        WORKER["Processo 2: Worker + Analisador AST"]
     end
-    DB[("PostgreSQL: eventos, tarefas, análises e catálogo")]
+    DB[("PostgreSQL 18\nEventos · Fila tarefas · Análises · Propostas · Catálogo")]
 
-    PORTAL <-->|HTTP e JSON| API
-    GH -->|Webhook de PR ou merge| API
-    API -->|Registra evento e tarefa| DB
-    DB -->|Tarefa reservada| WORKER
-    WORKER <-->|Contexto e interpretação| IA
-    WORKER -->|Commit da documentação e comentário no PR| GH
-    WORKER -->|Resultados e catálogo após merge| DB
-    DB -->|Catálogo, histórico e grafo| API
+    PORTAL <-->|HTTP / JSON (Consulta e Aprovação)| API
+    GH -->|Webhook PR / Merge| API
+    API -->|Transação única: evento + tarefa| DB
+    DB -->|FOR UPDATE SKIP LOCKED| WORKER
+    WORKER <-->|Contexto mínimo + Propostas| IA
+    WORKER -->|Comentário no PR: resumo + link p/ portal| GH
+    WORKER -->|Propostas e incorporação pós-merge| DB
+    DB -->|Catálogo, propostas, histórico e grafo| API
 ```
 
-Serão **dois processos permanentes da aplicação e uma instância PostgreSQL**. A fila será uma tabela do próprio banco. Inicialmente, um worker executará uma tarefa por vez.
+São **dois processos permanentes da aplicação e uma instância PostgreSQL**. A fila é uma tabela do próprio banco (`tarefas`). Inicialmente, um worker executa uma tarefa por vez.
 
-Essa separação permite receber e registrar tarefas durante uma parada do worker, desde que a API e o banco estejam disponíveis. A indisponibilidade do PostgreSQL interrompe recebimento, consultas e processamento. Uma falha no worker interrompe temporariamente análise, publicação e atualização do catálogo. Esses limites são aceitos nesta etapa, com recuperação de tarefas e backup do banco previstos na implementação.
+Essa separação permite receber e registrar tarefas durante uma parada do worker, desde que a API e o banco estejam disponíveis. A indisponibilidade do PostgreSQL interrompe recebimento, consultas, revisões e processamento. Uma falha no worker interrompe temporariamente análise, comentários no PR e efetivação automática após *merge*. Esses limites são aceitos nesta etapa, com recuperação de tarefas e backup do banco previstos na implementação.
 
-### Fluxo de consulta
+### Fluxo de consulta e revisão no portal
 
-1. Uma pessoa abre o portal React.
-2. O portal solicita o catálogo, o histórico ou o grafo à API.
-3. A API consulta o PostgreSQL e devolve JSON.
+1. Uma pessoa abre o portal React (diretamente ou pelo link publicado no comentário do PR) e se autentica com sua conta do GitHub.
+2. O portal solicita à API o catálogo vigente, as propostas pendentes de revisão, o histórico por PR ou o grafo de dependências.
+3. A API verifica as permissões do usuário no repositório, consulta o PostgreSQL e devolve JSON.
+4. Ao revisar uma proposta no portal, o revisor pode aceitá-la, ajustar seu texto ou rejeitá-la; a API persiste a decisão preservando a proposta original gerada pela IA.
 
-### Fluxo de atualização
+### Fluxo automático de análise e incorporação
 
-1. O GitHub avisa que um PR foi aberto ou atualizado.
-2. A API valida a entrega e grava o evento e a tarefa na mesma transação.
-3. O worker reserva a tarefa e analisa as versões do código com `ast`.
-4. O Gemini interpreta o contexto e propõe a atualização das regras.
-5. O worker gera JSON e Markdown e faz commit na branch do próprio PR, acompanhado de um comentário explicativo.
-6. O revisor confere código e documentação no GitHub e pode editar os arquivos ou solicitar ajustes.
-7. O merge representa a aceitação da versão final. Um novo evento gera a sincronização da documentação incorporada com o banco.
+1. O GitHub notifica a API que um PR foi aberto ou atualizado (`opened`, `synchronize`, `reopened`).
+2. A API valida a entrega e grava o evento e a tarefa `analisar_pr` na mesma transação.
+3. O worker reserva a tarefa, obtém as versões do código via GitHub e executa a análise estática com `ast`.
+4. O Gemini interpreta o contexto selecionado e devolve propostas estruturadas de inclusão, alteração ou remoção de regras.
+5. O worker persiste a análise, os trechos de código e as propostas no PostgreSQL (com status `pendente`) e publica (ou atualiza) um **comentário no PR** contendo o resumo das mudanças propostas, referências ao código e o **link direto para revisão e aprovação no portal**.
+6. O revisor analisa o código no GitHub e acessa o portal pelo link para aceitar, ajustar ou rejeitar cada proposta.
+7. Quando o PR é incorporado à branch de referência (`closed` com `merged: true`), a tarefa `pr_mergeado` incorpora as propostas aprovadas/ajustadas ao catálogo vigente e atualiza o grafo de módulos no PostgreSQL. Um PR fechado sem *merge* não altera o catálogo vigente.
 
 ## 2. Tecnologias definidas e propostas de implementação
 
 | Parte | Tecnologia | Responsabilidade |
 |---|---|---|
-| Linguagem do servidor | Python estável mais recente | Executar API, worker e analisador, com versão fixada para reproduzir os experimentos. |
-| API — processo 1 | FastAPI | Receber webhooks e atender as consultas do portal. |
-| Worker — processo 2 | Python | Consultar a fila no banco e executar o pipeline de análise, publicação e sincronização. |
-| Análise estática | Biblioteca padrão `ast` | Extrair estrutura, comparar versões, identificar dependências e selecionar contexto. |
-| Acesso às versões | Git e API do GitHub | Obter arquivos, commits e informações dos PRs. |
-| Integração com IA | Gemini 3.6 Flash pela Gemini API, com adaptador Python | Preparar requisições, tratar falhas e validar respostas estruturadas. |
-| Persistência | Uma instância PostgreSQL com um banco + SQLAlchemy | Armazenar eventos, tarefas, análises, propostas, métricas e cópias das versões publicadas. |
-| Fila de processamento | Tabela `tarefas` no PostgreSQL | Reservar trabalho, controlar tentativas e recuperar tarefas interrompidas. |
-| Portal | React; Vite proposto para desenvolvimento e build | Consultar catálogo, histórico e grafo. |
+| Linguagem do servidor | Python 3.15 (fixado em `backend/.python-version`, gerenciado com `uv`) | Executar API, worker, CLI e analisador, com versão fixada para reproduzir os experimentos. |
+| API — processo 1 | FastAPI + Uvicorn | Receber webhooks, autenticar usuários, atender consultas e receber decisões de revisão do portal. |
+| Worker — processo 2 | Python | Consultar a fila no banco e executar o pipeline de análise, publicação de comentário no PR e incorporação pós-merge. |
+| Análise estática | Biblioteca padrão `ast` | Extrair estrutura, comparar versões, identificar dependências e selecionar contexto (módulo puro sem I/O). |
+| Acesso às versões | Git e API REST do GitHub | Obter arquivos, commits e informações dos PRs (somente leitura no conteúdo). |
+| Integração com IA | Gemini 3.6 Flash pela Gemini API (`google-genai`) | Preparar requisições, tratar falhas e validar respostas estruturadas. |
+| Persistência e catálogo | PostgreSQL 18 + SQLAlchemy 2 + Alembic | Fonte oficial do catálogo (exportável em JSON/Markdown) e armazenamento de eventos, tarefas, análises, trechos, propostas, revisões e métricas. |
+| Fila de processamento | Tabela `tarefas` no PostgreSQL | Reservar trabalho (`FOR UPDATE SKIP LOCKED`), controlar tentativas e recuperar tarefas interrompidas. |
+| Portal | React 19 + TypeScript 7 + Vite 8 (`pnpm`) | Consultar catálogo, histórico e grafo e revisar/aprovar propostas de PR. |
 | Visualização do grafo | Cytoscape.js | Apresentar dependências e módulos envolvidos nas mudanças. |
 
-O [SQLAlchemy](https://docs.sqlalchemy.org/en/20/orm/quickstart.html) será utilizado pelos dois processos, com os mesmos modelos e uma única sequência de migrações. Registrar evento e tarefa na mesma transação elimina a janela entre persistir o recebimento e encaminhar o trabalho a outra infraestrutura.
+O [SQLAlchemy](https://docs.sqlalchemy.org/en/20/orm/quickstart.html) é utilizado pelos dois processos, com os mesmos modelos em `codice/db/modelos/` e uma única sequência de migrações Alembic. Registrar evento e tarefa na mesma transação elimina a janela entre persistir o recebimento e encaminhar o trabalho a outra infraestrutura.
 
 O [guia do React apresenta o Vite como uma opção de build](https://react.dev/learn/build-a-react-app-from-scratch). Os arquivos gerados poderão ser servidos com os [arquivos estáticos do FastAPI](https://fastapi.tiangolo.com/tutorial/static-files/), configurando o fallback das rotas da SPA. O grafo utilizará [Cytoscape.js](https://js.cytoscape.org/).
 
@@ -85,9 +86,9 @@ A fila no banco atende à proposta inicial de um worker e poucos tipos de tarefa
 
 ### Versão da aplicação e código analisado
 
-API, worker e analisador usarão a **versão estável mais recente do Python**, com a versão exata e as dependências fixadas no ambiente. Na consulta de **29/10/2026**, a versão disponível é o **Python 3.15.2**, publicado em 25/10/2026. A compatibilidade das bibliotecas será verificada na implementação. [Downloads oficiais do Python](https://www.python.org/downloads/) e [Python 3.15.2](https://www.python.org/downloads/release/python-3152/).
+API, worker e analisador usam **Python 3.15** (com versão exata e dependências fixadas via `backend/.python-version` e `uv.lock`; na consulta de **29/10/2026**, a versão de referência é **Python 3.15.2**, publicado em 25/10/2026). [Downloads oficiais do Python](https://www.python.org/downloads/) e [Python 3.15.2](https://www.python.org/downloads/release/python-3152/).
 
-Os repositórios analisados terão como alvo **Python 3**. A versão usada para executar a ferramenta é diferente da versão do projeto analisado: o código será lido como texto, sem instalar ou executar suas dependências.
+Os repositórios analisados têm como alvo **Python 3**. A versão usada para executar a ferramenta é independente da versão do projeto analisado: o código é lido como texto, sem instalar ou executar suas dependências.
 
 **A política de compatibilidade está definida:** usar o `ast` da versão instalada para analisar código da versão atual e de versões anteriores do Python 3, desde que a sintaxe seja aceita e as estruturas sejam tratadas pelo analisador.
 
@@ -95,7 +96,7 @@ Isso não garante suporte automático a toda versão desde a 3.0: uma sintaxe an
 
 ### Etapas da análise
 
-A biblioteca `ast` transforma o texto do código em uma árvore de sintaxe abstrata. O analisador poderá identificar funções, classes, condições, chamadas, retornos e importações sem executar o projeto. [Documentação do `ast`](https://docs.python.org/3/library/ast.html).
+A biblioteca `ast` transforma o texto do código em uma árvore de sintaxe abstrata. O analisador identifica funções, classes, condições, chamadas, retornos e importações sem executar o projeto. [Documentação do `ast`](https://docs.python.org/3/library/ast.html).
 
 1. **Extração:** identificar módulos, funções, métodos, classes e referências.
 2. **Comparação:** localizar inclusões, remoções e alterações estruturais entre as versões.
@@ -103,7 +104,7 @@ A biblioteca `ast` transforma o texto do código em uma árvore de sintaxe abstr
 4. **Interpretação pelo Gemini:** avaliar se existe mudança de negócio e propor a atualização correspondente.
 5. **Validação:** conferir o formato da resposta e suas referências ao código.
 
-O núcleo estático será um módulo Python comum, com entradas e resultados estruturados, importado pelo worker e reutilizável pelo terminal e pelo replay. O módulo receberá versões de código e documentação existente; acesso ao GitHub, persistência e chamadas ao Gemini ficarão nos adaptadores coordenados pelo pipeline.
+O núcleo estático (`codice/analise/`) é um módulo Python puro, sem I/O e sem dependências de framework, importado pelo worker e reutilizável pela CLI e pelo replay. Ele recebe versões de código e catálogo existente e devolve estruturas tipadas; o acesso ao GitHub (`codice/github/`), a persistência (`codice/db/`) e as chamadas ao Gemini (`codice/ia/`) são coordenados pelo pipeline em `codice/processamento/`.
 
 ### Exemplo
 
@@ -125,22 +126,22 @@ A comparação identifica a troca de `100` por `150` na condição. O Gemini rec
 
 > O desconto de 10% passa a ser concedido para compras a partir de R$ 150.
 
-A análise também precisa considerar alterações fora das funções, como constantes e importações. Uma função pode manter o texto e mudar de comportamento porque uma constante utilizada por ela foi alterada.
+A análise também considera alterações fora das funções, como constantes e importações. Uma função pode manter o texto e mudar de comportamento porque uma constante utilizada por ela foi alterada.
 
 ### Limites da análise estática
 
-O `ast` não determina sozinho o significado de negócio de uma alteração nem resolve todas as dependências de Python. A proposta é construir um grafo de importações e chamadas resolvidas estaticamente, registrando as relações desconhecidas como limitação.
+O `ast` não determina sozinho o significado de negócio de uma alteração nem resolve todas as dependências dinâmicas de Python. A proposta é construir um grafo de importações e chamadas resolvidas estaticamente, registrando as relações desconhecidas como limitação.
 
-Uma dependência indica possível impacto, mas não comprova mudança de regra de negócio. Uma alteração estrutural também pode representar uma refatoração sem mudança de comportamento. A interpretação da IA continuará sujeita à revisão humana e à avaliação do TCC.
+Uma dependência indica possível impacto, mas não comprova mudança de regra de negócio. Uma alteração estrutural também pode representar uma refatoração sem mudança de comportamento. A interpretação da IA permanece sujeita à revisão humana no portal e à avaliação do TCC.
 
 ## 4. Integração com o GitHub e processamento assíncrono
 
 ### GitHub App
 
-A integração será feita por uma **GitHub App**, instalada nos repositórios acompanhados e autorizada a consultar código, publicar documentação e comentar nos PRs.
+A integração é feita por uma **GitHub App**, instalada nos repositórios acompanhados e autorizada a ler o código e publicar comentários nos PRs.
 
-- **Webhook:** informa à API que um evento aconteceu.
-- **API do GitHub:** permite ao worker obter versões, consultar PRs e publicar os resultados.
+- **Webhook:** informa à API que um evento de PR aconteceu.
+- **API REST do GitHub:** permite ao worker obter versões do código, consultar PRs e publicar/atualizar o comentário resumo + link para o portal.
 
 O GitHub apresenta esse fluxo em seu [tutorial de aplicação que responde a webhooks](https://docs.github.com/en/apps/creating-github-apps/writing-code-for-a-github-app/building-a-github-app-that-responds-to-webhook-events).
 
@@ -149,14 +150,12 @@ O GitHub apresenta esse fluxo em seu [tutorial de aplicação que responde a web
 | Ação de `pull_request` | Tratamento |
 |---|---|
 | `opened` | Criar a tarefa `analisar_pr` para a versão recebida. |
-| `synchronize` | Criar `analisar_pr` quando houver nova versão do código; reconhecer a atualização gerada apenas pelo commit de documentação do bot para evitar um ciclo. |
+| `synchronize` | Criar `analisar_pr` para o novo `head_sha` e marcar propostas pendentes de commits anteriores do PR como `obsoleta`. Como o bot não faz commit na branch, não há risco de ciclo de eventos próprios. |
 | `reopened` | Verificar a versão atual e criar `analisar_pr` quando necessário. |
-| `closed` com `merged: true` | Criar `pr_mergeado` para importar a documentação efetivamente incorporada. |
-| `closed` sem merge | Registrar o encerramento e descartar análises pendentes que perderam a finalidade; manter o catálogo vigente. |
+| `closed` com `merged: true` | Criar `pr_mergeado` para incorporar ao catálogo vigente as propostas aprovadas/ajustadas do PR e atualizar o grafo do commit incorporado (ou sinalizar pendência se a revisão no portal ainda não tiver sido concluída). |
+| `closed` sem merge | Registrar o encerramento, descartar tarefas pendentes e encerrar propostas pendentes do PR; manter o catálogo vigente inalterado. |
 
 Os eventos e seus campos estão na [documentação de payloads do GitHub](https://docs.github.com/en/webhooks/webhook-events-and-payloads#pull_request).
-
-O controle dos eventos do bot deve conferir a identidade do app, o commit publicado e os arquivos alterados. Um evento só será ignorado como atualização própria quando corresponder à documentação produzida pela ferramenta. Commits humanos ou alterações de código precisam continuar gerando análise.
 
 ### Recebimento transacional
 
@@ -165,13 +164,13 @@ O controle dos eventos do bot deve conferir a identidade do app, o commit public
 3. Em **uma única transação PostgreSQL**, registra o evento e cria a tarefa correspondente, com uma restrição de unicidade para `X-GitHub-Delivery` no registro do evento. Eventos ignorados também podem ser registrados com o motivo, sem gerar tarefa.
 4. Depois do commit da transação, responde com sucesso ao GitHub. Uma entrega já persistida é reconhecida sem criar outra tarefa.
 
-Se a transação falhar, evento e tarefa não serão confirmados e a API retornará falha. Se a resposta se perder depois do commit, o reenvio será deduplicado. O recebimento deve terminar em até dez segundos, sem executar AST ou chamadas à IA na requisição. [Boas práticas para webhooks](https://docs.github.com/en/webhooks/using-webhooks/best-practices-for-using-webhooks).
+Se a transação falhar, evento e tarefa não são confirmados e a API retorna falha. Se a resposta se perder depois do commit, o reenvio é deduplicado. O recebimento deve terminar em até dez segundos, sem executar AST ou chamadas à IA na requisição. [Boas práticas para webhooks](https://docs.github.com/en/webhooks/using-webhooks/best-practices-for-using-webhooks).
 
-O GitHub **não reenvia automaticamente entregas com falha**. Inicialmente, será previsto reenvio manual e conferência das entregas; a automação da reconciliação poderá ser acrescentada aos processos existentes. [Tratamento de entregas com falha](https://docs.github.com/en/webhooks/using-webhooks/handling-failed-webhook-deliveries).
+O GitHub **não reenvia automaticamente entregas com falha**. Inicialmente, prevê-se reenvio manual e conferência das entregas; a automação da reconciliação poderá ser acrescentada aos processos existentes. [Tratamento de entregas com falha](https://docs.github.com/en/webhooks/using-webhooks/handling-failed-webhook-deliveries).
 
 ### Fila no PostgreSQL
 
-A tabela `tarefas` armazenará o tipo de operação, o evento de origem, o PR, os commits, o estado de processamento, as tentativas e os erros. A estrutura abaixo é uma referência para a implementação; repositório, instalação e `delivery_id` são obtidos pelo evento de origem. As demais tabelas estão na seção 7.
+A tabela `tarefas` armazena o tipo de operação, o evento de origem, o PR, os commits, o estado de processamento, as tentativas e os erros. A estrutura abaixo é a referência para a implementação; repositório, instalação e `delivery_id` são obtidos pelo evento de origem. As demais tabelas estão na seção 7.
 
 ```sql
 CREATE TABLE tarefas (
@@ -215,9 +214,9 @@ WHERE tarefa.id = (
 RETURNING tarefa.*;
 ```
 
-O worker consultará periodicamente as tarefas disponíveis, com intervalo configurável quando a fila estiver vazia. A reserva usa `FOR UPDATE SKIP LOCKED`, que permite pular linhas já bloqueadas por outro consumidor. A transação será encerrada antes da análise e das chamadas externas. O PostgreSQL documenta esse uso para tabelas que funcionam como filas. [Bloqueio de linhas e `SKIP LOCKED`](https://www.postgresql.org/docs/current/sql-select.html#SQL-FOR-UPDATE-SHARE).
+O worker consulta periodicamente as tarefas disponíveis, com intervalo configurável (`WORKER_INTERVALO_CONSULTA_S`) quando a fila estiver vazia. A reserva usa `FOR UPDATE SKIP LOCKED`, permitindo pular linhas já bloqueadas por outro consumidor. A transação é encerrada antes da análise e das chamadas externas. [Bloqueio de linhas e `SKIP LOCKED`](https://www.postgresql.org/docs/current/sql-select.html#SQL-FOR-UPDATE-SHARE).
 
-Os estados previstos são `pendente`, `processando`, `concluida`, `erro` e `descartada`. A conclusão será registrada no banco junto aos resultados da etapa. A unicidade de `delivery_id` em `eventos` e de `evento_id` em `tarefas`, com tratamento de conflito na inserção, impedirá a criação de outra tarefa para a mesma entrega.
+Os estados previstos são `pendente`, `processando`, `concluida`, `erro` e `descartada`. A conclusão é registrada no banco junto aos resultados da etapa. A unicidade de `delivery_id` em `eventos` e de `evento_id` em `tarefas`, com tratamento de conflito na inserção, impede a criação de outra tarefa para a mesma entrega.
 
 ### Recuperação de falhas e novas tentativas
 
@@ -225,147 +224,161 @@ Os estados previstos são `pendente`, `processando`, `concluida`, `erro` e `desc
 |---|---|
 | Entrega repetida | Reconhecer o evento existente e manter a tarefa já criada. |
 | Worker cai durante a execução | Recuperar a tarefa após expirar a reserva, retomando as etapas ainda necessárias. |
-| Análise salva, mas publicação falha | Reutilizar o resultado persistido e tentar novamente a publicação. |
-| Commit feito, mas resposta ou registro local se perde | Consultar o GitHub e reconhecer a publicação antes de criar outro commit ou comentário. |
+| Análise salva, mas publicação do comentário falha | Reutilizar o resultado persistido e tentar novamente a publicação do comentário. |
+| Comentário publicado, mas resposta ou registro local se perde | Consultar os comentários do PR no GitHub por marcador estável da aplicação e atualizar o comentário existente em vez de duplicar. |
 | Gemini ou GitHub indisponível | Reagendar com `disponivel_em`, intervalo entre tentativas e limite configurável. |
 | Limite esgotado | Marcar como `erro`, preservar o histórico e permitir reprocessamento operacional após a correção. |
 | PR atualizado ou fechado durante a análise | Conferir o estado atual antes de publicar e descartar ou substituir o trabalho obsoleto. |
 
-A reserva terá prazo e identificação da tentativa. O worker deverá renová-la enquanto estiver ativo; na inicialização e periodicamente, verificará reservas expiradas para reagendar tarefas ou marcá-las como `erro` quando o limite de tentativas tiver sido atingido. Atualizações de conclusão e renovação devem conferir `reserva_token` e o estado atual, para que uma execução antiga não conclua uma tarefa já retomada. Os cinco minutos do exemplo são ilustrativos; os prazos serão definidos com os tempos limite das etapas.
+A reserva tem prazo e identificação da tentativa (`reserva_token`). O worker renova a reserva enquanto estiver ativo; na inicialização e periodicamente, verifica reservas expiradas para reagendar tarefas ou marcá-las como `erro` quando o limite de tentativas for atingido. Atualizações de conclusão e renovação conferem `reserva_token` e o estado atual, impedindo que uma execução antiga conclua uma tarefa já retomada.
 
-O banco e o GitHub não participam da mesma transação. Por isso, o processamento deve tolerar repetição. A deduplicação da análise considerará repositório, PR, commits comparados e configuração da execução; a publicação terá identificação estável vinculada à análise e ao commit de origem.
-
-As etapas e tentativas ficarão registradas no PostgreSQL. Esse histórico permitirá acompanhar recebimento, análise, chamadas ao Gemini, publicação, erros e sincronização após o merge.
+O banco e o GitHub não participam da mesma transação; por isso o processamento tolera repetição. A deduplicação da análise considera repositório, PR, commits comparados, modelo e versão do prompt; a publicação do comentário mantém identificação estável vinculada ao PR/análise.
 
 ### Autenticação e permissões
 
-O worker usará a chave privada do GitHub App para solicitar um token de instalação e atuar nos repositórios autorizados. [Autenticação da instalação](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation).
+O worker usa a chave privada do GitHub App para solicitar um token de instalação e atuar nos repositórios autorizados. [Autenticação da instalação](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation).
 
-As permissões previstas são:
+Como o Códice não commita arquivos na branch do PR, as permissões necessárias são mínimas:
 
-- **Contents — leitura e escrita:** obter o código e gravar os artefatos de documentação na branch do PR.
-- **Pull requests — leitura e escrita:** consultar PRs e publicar comentários.
+- **Contents — somente leitura:** obter o código-fonte, commits e árvores de arquivos do repositório.
+- **Pull requests — leitura e escrita:** consultar PRs e publicar/atualizar comentários.
 
 Comentários gerais de PR utilizam as operações de comentários de issues. [API de comentários](https://docs.github.com/en/rest/issues/comments).
 
-O fluxo automático pressupõe que a instalação tenha permissão de escrita na branch de origem. O tratamento de PRs de forks e branches com restrições será definido na implementação; falta de permissão deverá ser registrada e informada no PR, sem apresentar a documentação como publicada.
+Por não exigir permissão de escrita em branches, o fluxo funciona naturalmente também para PRs oriundos de *forks* e branches com regras estritas de proteção.
 
-O portal será de consulta e exigirá login com a conta do GitHub, conforme a seção 7. Cada pessoa verá apenas os repositórios da instalação aos quais tem acesso. Segredos do GitHub, do Gemini e do banco permanecerão nos componentes do servidor.
+O portal exige login com a conta do GitHub, conforme a seção 7. Cada pessoa visualiza apenas os repositórios da instalação aos quais tem acesso, e ações de revisão/aprovação exigem permissão compatível no repositório. Segredos do GitHub, do Gemini e do banco permanecem exclusivamente no servidor.
 
 ### Desenvolvimento local e hospedagem
 
-No desenvolvimento, os webhooks poderão ser encaminhados para a API local com uma ferramenta como a utilizada no [tutorial oficial do GitHub](https://docs.github.com/en/apps/creating-github-apps/writing-code-for-a-github-app/building-a-github-app-that-responds-to-webhook-events). Em operação contínua, a API precisará de um endereço público HTTPS.
+No desenvolvimento, os webhooks podem ser encaminhados para a API local com uma ferramenta como a utilizada no [tutorial oficial do GitHub](https://docs.github.com/en/apps/creating-github-apps/writing-code-for-a-github-app/building-a-github-app-that-responds-to-webhook-events). Em operação contínua, a API precisará de um endereço público HTTPS.
 
-A **Render foi escolhida para hospedar a aplicação**. A API será um serviço web e o worker será um processo de processamento em segundo plano. O PostgreSQL utilizará uma oferta gratuita, cujo provedor ainda será definido. O build estático do React permanece proposto para publicação junto à API. Migrações, reinício, persistência e backup serão configurados na implementação.
+A **Render foi escolhida para hospedar a aplicação**. A API será um serviço web e o worker será um processo em segundo plano. O PostgreSQL utilizará uma oferta gratuita, cujo provedor ainda será definido. O build estático do React permanece proposto para publicação junto à API. Migrações, reinício, persistência e backup serão configurados na implementação.
 
 A escolha da Render não resolve o plano de execução: na consulta de 29/10/2026, seus workers dedicados não têm instância gratuita. O serviço web gratuito suspende por inatividade, o que pode comprometer o prazo de resposta do webhook na primeira requisição. Se o banco escolhido for o PostgreSQL gratuito da própria Render, ele expira após 30 dias. O plano do worker, a disponibilidade da API e a continuidade do banco precisam ser definidos antes da implantação. [Planos gratuitos da Render](https://render.com/docs/free) e [serviços de worker](https://render.com/docs/background-workers).
 
-No desenvolvimento do React em outra origem, será necessário configurar encaminhamento à API ou [CORS](https://fastapi.tiangolo.com/tutorial/cors/).
+No desenvolvimento do React em outra origem, o Vite encaminha `/api` para a API local (ou configura-se [CORS](https://fastapi.tiangolo.com/tutorial/cors/)).
 
 ## 5. Uso de LLM com Gemini
 
-A IA escolhida é o **Gemini 3.6 Flash**, acessado pela Gemini API com o identificador `gemini-3.6-flash`, listado no [catálogo oficial de modelos](https://ai.google.dev/gemini-api/docs/models). A escolha do modelo está resolvida. O piloto utilizará esse modelo para avaliar qualidade, consumo e tempo e calibrar a configuração; suas cotas e o protocolo do piloto ainda serão definidos.
+A IA escolhida é o **Gemini 3.6 Flash**, acessado pela Gemini API com o identificador `gemini-3.6-flash`, listado no [catálogo oficial de modelos](https://ai.google.dev/gemini-api/docs/models). O piloto utilizará esse modelo para avaliar qualidade, consumo e tempo e calibrar a configuração; suas cotas e o protocolo do piloto ainda serão definidos.
 
 O nível gratuito dá acesso limitado a determinados modelos. Suas cotas precisam ser confrontadas com o volume previsto para o replay histórico. As condições estão nas páginas de [preços](https://ai.google.dev/gemini-api/docs/pricing) e [limites do Gemini](https://ai.google.dev/gemini-api/docs/rate-limits).
 
 No nível gratuito, o conteúdo pode ser utilizado para melhorar os produtos. Essa condição deverá ser considerada se o estudo de caso envolver código privado. [Condições da API](https://ai.google.dev/gemini-api/docs/pricing).
 
-### Adaptador de IA
+### Módulo de IA (`codice/ia/`)
 
-O pipeline terá uma interface Python para interpretar mudanças, com o código específico do Gemini em um adaptador. Esse adaptador preparará a requisição, tratará erros e validará a resposta estruturada, contendo:
+O código de comunicação com a Gemini API fica encapsulado em `codice/ia/` (recebido por parâmetro no pipeline para facilitar testes e replay). Esse módulo prepara a requisição, trata falhas e valida a resposta estruturada (com Pydantic), contendo:
 
 - Existência ou ausência de mudança de regra de negócio.
 - Regras afetadas e referências ao código que sustentam a proposta.
-- Tipo de atualização: inclusão, alteração ou remoção.
-- Texto proposto para a documentação.
+- Tipo de atualização: `inclusao`, `alteracao` ou `remocao`.
+- Título, texto proposto e justificativa para a documentação.
 
-Conferir formato e referências não comprova a corretude semântica da resposta. As propostas serão revisadas no GitHub e avaliadas pelo protocolo do TCC.
+Conferir formato e referências não comprova a corretude semântica da resposta. As propostas passam por revisão humana no portal e pela avaliação quantitativa do TCC.
 
 ### Consumo e reprodução dos experimentos
 
-Serão enviados os trechos alterados e o contexto relevante, incluindo dependências e regras existentes quando necessário. Cada execução registrará modelo, versão do prompt, parâmetros, tokens e tempo. As chamadas terão tempo limite e novas tentativas controladas pela tarefa.
+São enviados apenas os trechos alterados e o contexto relevante, incluindo dependências e regras existentes quando necessário. Cada execução registra modelo, versão do prompt, parâmetros, tokens e tempo. As chamadas têm tempo limite e novas tentativas controladas pela tarefa.
 
-Modelo e configuração serão mantidos consistentes nas comparações. Mudanças deverão ser registradas para permitir interpretar os resultados.
+Modelo e configuração são mantidos consistentes nas comparações. Mudanças são registradas para permitir interpretar os resultados.
 
 ## 6. Armazenamento, revisão e versionamento da documentação
 
-O **repositório analisado será a fonte oficial da documentação**, versionada junto ao código. O PostgreSQL manterá a operação da ferramenta e uma cópia das versões incorporadas, usada para consulta pelo portal.
+O **PostgreSQL é a fonte oficial do catálogo** e de todo o histórico operacional da ferramenta. A partir do catálogo vigente (ou de uma versão específica), o Códice gera exportações em **JSON** (para consumo automatizado) e **Markdown** (para leitura humana), disponíveis via API, portal e CLI.
 
-| Local | Conteúdo |
+| Artefato / Local | Conteúdo |
 |---|---|
-| Repositório analisado | Catálogo em JSON e Markdown, revisado e incorporado no mesmo PR do código. |
-| PostgreSQL | Eventos, tarefas, etapas, tentativas, análises, trechos de código analisados, propostas originais, métricas, histórico e cópia do catálogo incorporado. |
+| PostgreSQL (fonte oficial) | Catálogo vigente (`regras`, `versoes_regra`), grafo de módulos (`modulos`, `modulo_dependencia`), eventos, tarefas, análises, trechos de código analisados, propostas originais da IA, revisões humanas e métricas. |
+| Comentário no PR (GitHub) | Resumo legível das regras afetadas, referências ao código, prévia do texto sugerido e **link direto para a tela de revisão daquele PR no portal**. |
+| Exportação JSON / Markdown | Representação estruturada (JSON) e legível (Markdown) gerada sob demanda a partir do catálogo armazenado no PostgreSQL. |
 
-### Publicação no próprio PR
+### Feedback no PR (resumo + link para o portal)
 
-O worker gerará JSON e Markdown a partir da mesma proposta estruturada e fará commit apenas nos caminhos de documentação mantidos pela ferramenta. Publicará um comentário curto com o resumo, as referências e a indicação dos arquivos alterados.
+Após concluir a análise de um PR e persistir as propostas no PostgreSQL, o worker publica (ou atualiza) um comentário curto no PR contendo:
 
-O revisor verá código e documentação juntos no GitHub. Poderá aceitar a proposta, editar os arquivos ou solicitar correções antes do merge. **O merge será o marco de aceitação e publicação da versão final**; uma aprovação de revisão sem merge ainda não atualizará o catálogo vigente.
+- Indicação clara de que há propostas de atualização de regras de negócio (ou de que nenhuma regra mudou, quando configurado para reportar).
+- Resumo de cada regra afetada (tipo de mudança, unidade de código e texto sugerido resumido).
+- **Link direto** para a tela de revisão daquele PR no portal (construído com `PORTAL_URL`).
 
-Antes de publicar, o worker verificará se o PR continua aberto e se sua versão corresponde à analisada. O commit terá como pai a versão conferida da branch, e sua atualização deverá ser feita sem forçar a referência. Se a branch tiver avançado, a publicação deverá ser reavaliada. O GitHub oferece atualização de referência com verificação de avanço, por meio de `force: false`. [Atualização de referências Git](https://docs.github.com/en/rest/git/refs#update-a-reference).
+Quando novos commits chegam ao PR (`synchronize`), o worker gera nova análise, marca as propostas pendentes anteriores como `obsoleta` e atualiza o comentário no PR apontando para a nova análise.
 
-O histórico identificará a versão de código analisada e o commit de documentação criado pelo bot. Atualizações feitas por desenvolvedores gerarão nova análise; ajustes humanos à documentação deverão ser preservados ou apresentados como conflito para revisão, sem sobrescrita silenciosa.
+### Revisão e aprovação no portal
 
-### Sincronização após o merge
+A revisão humana acontece no **portal React**, acessível diretamente pelo link do comentário no PR ou pela listagem de pendências do repositório. Para cada proposta da análise atual do PR, o revisor visualiza o trecho de código anterior e novo (`trechos_codigo`), o texto atual da regra (quando existir) e a sugestão do Gemini, podendo:
 
-A tarefa `pr_mergeado` obterá o commit efetivamente incorporado à branch de referência, lerá os artefatos de documentação daquele commit e atualizará a cópia no banco. O conteúdo importado será a versão final do repositório, incluindo edições humanas feitas durante a revisão.
+- **Aprovar (`aprovada`):** aceita o texto original proposto pela IA.
+- **Ajustar (`ajustada`):** edita título e/ou descrição (`titulo_revisado`, `descricao_revisada`), mantendo o texto original da IA preservado em `propostas` para a avaliação do TCC.
+- **Rejeitar (`rejeitada`):** descarta a proposta sem alterar o catálogo.
 
-O commit incorporado deverá ser resolvido conforme o tipo de merge, incluindo merge comum, squash ou rebase. [Identificação do commit após o merge](https://docs.github.com/en/rest/pulls/pulls#get-a-pull-request).
+### Incorporação pós-merge
 
-A importação deverá ser idempotente e registrar repositório, PR, versão do código, versão da documentação e horário da sincronização. Tarefas de merges recebidas fora de ordem poderão acrescentar versões ao histórico, mas não deverão fazer o catálogo atual retroceder; a atualização verificará a relação entre os commits da branch de referência.
+**A entrada de uma proposta no catálogo vigente depende de duas condições: aprovação humana no portal e incorporação (*merge*) do PR à branch de referência.**
 
-Um PR fechado sem merge preservará o catálogo vigente. Se um PR for incorporado com documentação ausente, inválida ou referente a uma análise desatualizada, a aplicação registrará a inconsistência para tratamento, sem apresentar aquela versão como sincronizada.
+- **Revisão antes do merge (fluxo principal):** as propostas aprovadas/ajustadas ficam registradas no banco aguardando integração. Quando o PR é mergeado (`closed` com `merged: true`), a tarefa `pr_mergeado` cria as novas linhas em `versoes_regra`, atualiza `regras.versao_atual_id` e atualiza `modulos`/`modulo_dependencia` para o commit incorporado.
+- **Merge antes da revisão:** se o PR for mergeado enquanto ainda houver propostas `pendente`, o portal destaca claramente a pendência/defasagem para a equipe; assim que o revisor aprovar ou ajustar uma proposta daquele PR já mergeado, a nova versão é incorporada ao catálogo vigente vinculada ao PR e ao `merge_commit_sha`.
+- **PR fechado sem merge:** propostas pendentes são encerradas e o catálogo vigente permanece inalterado.
+- **Merges fora de ordem:** a incorporação é idempotente e verifica a relação entre os commits da branch de referência (`commit_catalogo_atual`), permitindo registrar o histórico sem fazer o catálogo vigente retroceder.
 
-### Portal de consulta e histórico
+A geração da base inicial também gera propostas revisáveis no portal antes de compor o catálogo vigente.
 
-O React consultará catálogo, origem das regras, histórico por PR e grafo por meio da API. O portal indicará a versão efetivamente sincronizada e a data da última atualização. Se o merge já ocorreu, mas sua tarefa ainda estiver pendente ou com erro, a defasagem deverá ser visível.
+### Portal de consulta, revisão e histórico
 
-As propostas originais e os ajustes humanos serão preservados separadamente para a avaliação. O replay medirá a saída automática antes da intervenção humana.
+O portal React consulta e atualiza os dados por meio da API FastAPI, oferecendo:
+
+- **Revisão de propostas por PR:** tela direta (aberta pelo link do comentário no PR) com resumo, trechos de código antes/depois e ações de aprovar, ajustar ou rejeitar.
+- **Catálogo vigente:** pesquisa por texto e módulo, vínculo com a unidade de código e exportação em JSON/Markdown.
+- **Histórico por PR:** evolução de cada regra (texto antes/depois, PR responsável, autoria da revisão e trechos de código vinculados).
+- **Grafo de módulos:** visualização interativa com Cytoscape.js destacando módulos envolvidos em cada mudança e suas dependências.
+- **Visibilidade de pendências:** indicação clara do commit atual do catálogo, tarefas em processamento/erro e PRs já mergeados com propostas ainda aguardando revisão.
+
+As propostas originais da IA (`propostas.titulo` / `propostas.descricao`) e os ajustes humanos (`propostas.titulo_revisado` / `propostas.descricao_revisada` e `versoes_regra.editada_por_humano`) ficam separados no banco. No replay histórico, avalia-se exclusivamente a saída automática antes de qualquer intervenção humana.
 
 ## 7. Modelo de dados
 
-O PostgreSQL terá onze entidades e três tabelas associativas, divididas em três grupos:
+O PostgreSQL possui onze entidades e três tabelas associativas, divididas em três grupos:
 
 | Grupo | Tabelas | Papel |
 |---|---|---|
-| Acesso | `usuarios`, `usuario_repositorio` | Login no portal e repositórios que cada pessoa pode consultar. |
-| Código e catálogo | `repositorios`, `modulos`, `modulo_dependencia`, `regras`, `versoes_regra` | Estado do código e cópia do catálogo incorporado, consultados pelo portal. |
-| Operação | `pull_requests`, `eventos`, `tarefas`, `analises`, `trechos_codigo`, `propostas`, `proposta_trecho` | Recebimento, processamento e resultados das análises, usados na recuperação de falhas e na avaliação. |
+| Acesso | `usuarios`, `usuario_repositorio` | Login no portal e repositórios que cada pessoa pode consultar e revisar. |
+| Código e catálogo | `repositorios`, `modulos`, `modulo_dependencia`, `regras`, `versoes_regra` | Estado do código e catálogo oficial vigente e versionado, consultados pelo portal e exportáveis em JSON/Markdown. |
+| Operação e revisão | `pull_requests`, `eventos`, `tarefas`, `analises`, `trechos_codigo`, `propostas`, `proposta_trecho` | Recebimento, processamento, resultados das análises, propostas originais da IA e decisões de revisão humana. |
 
-A instalação da GitHub App não terá tabela própria: seu identificador fica em `repositorios`. A publicação no PR é registrada em `analises`, e a sincronização após o merge, em `pull_requests`, `repositorios` e `versoes_regra`.
+A instalação da GitHub App não tem tabela própria: seu identificador fica em `repositorios`. A publicação do comentário no PR é registrada em `analises`, as decisões de revisão em `propostas`, e a incorporação no catálogo vigente em `pull_requests`, `repositorios` e `versoes_regra`.
 
 ### Autenticação
 
-O portal exigirá login com a conta do GitHub, pelo fluxo de autorização de usuário da própria GitHub App. A ferramenta não armazenará senhas. [Autenticação em nome do usuário](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-with-a-github-app-on-behalf-of-a-user).
+O portal exige login com a conta do GitHub, pelo fluxo de autorização de usuário da própria GitHub App. A ferramenta não armazena senhas. [Autenticação em nome do usuário](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-with-a-github-app-on-behalf-of-a-user).
 
-Após o login, a API consultará os repositórios da instalação acessíveis à pessoa e registrará essa relação em `usuario_repositorio`. O portal apresentará catálogo, histórico e grafo apenas desses repositórios, e a permissão será verificada novamente quando `verificado_em` expirar. [Repositórios acessíveis ao usuário](https://docs.github.com/en/rest/apps/installations#list-repositories-accessible-to-the-user-access-token).
+Após o login, a API consulta os repositórios da instalação acessíveis à pessoa e registra essa relação (e o nível de permissão) em `usuario_repositorio`. O portal apresenta catálogo, propostas, histórico e grafo apenas desses repositórios, revalidando a permissão quando `verificado_em` expirar. [Repositórios acessíveis ao usuário](https://docs.github.com/en/rest/apps/installations#list-repositories-accessible-to-the-user-access-token).
 
-O login vale apenas para o portal. A revisão e a edição da documentação continuam no GitHub, e a autoria dessas ações é registrada pelo login do GitHub nos dados do PR.
+A autoria das revisões no portal fica registrada em `propostas.revisado_por_id` (referenciando `usuarios`), mantendo rastreabilidade completa de quem aprovou, ajustou ou rejeitou cada proposta.
 
 ### Entidades
 
-Os campos abaixo são os principais de cada tabela; tipos, índices e campos auxiliares serão definidos nas migrações.
+Os campos abaixo são os principais de cada tabela; tipos, índices e campos auxiliares são definidos nas migrações Alembic.
 
 | Entidade (tabela) | Campos principais | Restrições e observações |
 |---|---|---|
 | Usuario (`usuarios`) | `id`, `github_id`, `login`, `nome`, `email`, `criado_em`, `ultimo_acesso_em` | `github_id` único. |
 | Acesso (`usuario_repositorio`) | `usuario_id`, `repositorio_id`, `permissao`, `verificado_em` | Chave primária (`usuario_id`, `repositorio_id`). |
-| Repositorio (`repositorios`) | `id`, `github_id`, `instalacao_id`, `nome_completo`, `branch_padrao`, `commit_catalogo_atual`, `catalogo_sincronizado_em`, `ativo` | `github_id` único. `commit_catalogo_atual` impede que o catálogo retroceda. |
-| PullRequest (`pull_requests`) | `id`, `repositorio_id`, `numero`, `titulo`, `autor_login`, `estado`, `head_sha`, `base_sha`, `merge_commit_sha`, `aberto_em`, `fechado_em`, `doc_sincronizada_em` | Único (`repositorio_id`, `numero`). `estado`: `aberto`, `fechado` ou `mergeado`. |
+| Repositorio (`repositorios`) | `id`, `github_id`, `instalacao_id`, `nome_completo`, `branch_padrao`, `commit_catalogo_atual`, `catalogo_atualizado_em`, `ativo` | `github_id` único. `commit_catalogo_atual` impede que o catálogo retroceda. |
+| PullRequest (`pull_requests`) | `id`, `repositorio_id`, `numero`, `titulo`, `autor_login`, `estado`, `head_sha`, `base_sha`, `merge_commit_sha`, `aberto_em`, `fechado_em`, `doc_incorporada_em` | Único (`repositorio_id`, `numero`). `estado`: `aberto`, `fechado` ou `mergeado`. |
 | Evento (`eventos`) | `id`, `delivery_id`, `acao`, `repositorio_id`, `pull_request_id`, `payload`, `motivo_ignorado`, `recebido_em` | `delivery_id` único. `motivo_ignorado` preenchido quando o evento não gera tarefa. |
 | Tarefa (`tarefas`) | `id`, `evento_id`, `pull_request_id`, `tipo`, `commit_sha`, `base_sha`, `status`, `tentativas`, `disponivel_em`, `iniciado_em`, `reserva_ate`, `reserva_token`, `erro`, `criado_em`, `concluido_em` | `evento_id` único. Estrutura detalhada na seção 4. |
-| Analise (`analises`) | `id`, `pull_request_id`, `tarefa_id`, `base_sha`, `head_sha`, `status`, `limitacoes`, `modelo`, `versao_prompt`, `parametros`, `tokens_entrada`, `tokens_saida`, `duracao_ms`, `commit_doc_sha`, `comentario_id`, `publicado_em`, `criado_em` | Único (`pull_request_id`, `base_sha`, `head_sha`, `modelo`, `versao_prompt`), para deduplicar. `tarefa_id` é nulo em execuções do replay e do terminal. `status`: `completa` ou `incompleta`. |
+| Analise (`analises`) | `id`, `pull_request_id`, `tarefa_id`, `base_sha`, `head_sha`, `status`, `limitacoes`, `modelo`, `versao_prompt`, `parametros`, `tokens_entrada`, `tokens_saida`, `duracao_ms`, `comentario_id`, `publicado_em`, `criado_em` | Único (`pull_request_id`, `base_sha`, `head_sha`, `modelo`, `versao_prompt`), para deduplicar. `tarefa_id` é nulo em execuções do replay e do terminal. `status`: `completa` ou `incompleta`. `comentario_id` e `publicado_em` registram o comentário publicado no PR. |
 | TrechoCodigo (`trechos_codigo`) | `id`, `analise_id`, `unidade`, `arquivo`, `situacao`, `papel`, `codigo_base`, `codigo_novo`, `linha_inicio_base`, `linha_fim_base`, `linha_inicio_novo`, `linha_fim_novo` | Único (`analise_id`, `unidade`). Cópia de uma unidade de código no momento da análise. `situacao`: `adicionada`, `removida`, `alterada` ou `afetada_por_constante`. `papel`: `alterada` ou `contexto`. `codigo_base` é nulo em unidades adicionadas, e `codigo_novo`, em removidas. |
-| Proposta (`propostas`) | `id`, `analise_id`, `regra_id`, `tipo`, `titulo`, `descricao`, `unidade`, `justificativa`, `criado_em` | Imutável: guarda a saída original do Gemini. `tipo`: `inclusao`, `alteracao` ou `remocao`. `regra_id` é nulo em inclusões. |
+| Proposta (`propostas`) | `id`, `analise_id`, `regra_id`, `tipo`, `titulo`, `descricao`, `unidade`, `justificativa`, `status`, `titulo_revisado`, `descricao_revisada`, `revisado_por_id`, `revisado_em`, `criado_em` | `titulo`, `descricao`, `unidade` e `justificativa` são imutáveis (saída original do Gemini). `tipo`: `inclusao`, `alteracao` ou `remocao`. `regra_id` é nulo em inclusões. `status`: `pendente`, `aprovada`, `ajustada`, `rejeitada` ou `obsoleta`. `titulo_revisado` e `descricao_revisada` guardam ajustes humanos feitos no portal. |
 | Referência (`proposta_trecho`) | `proposta_id`, `trecho_id` | Chave primária (`proposta_id`, `trecho_id`). Trechos de código que sustentam a proposta; ambos devem pertencer à mesma análise. |
 | Regra (`regras`) | `id`, `repositorio_id`, `identificador`, `versao_atual_id`, `criado_em` | Único (`repositorio_id`, `identificador`). Identidade estável da regra entre versões. |
-| VersaoRegra (`versoes_regra`) | `id`, `regra_id`, `numero`, `titulo`, `descricao`, `modulo_id`, `unidade`, `arquivo`, `linha_inicio`, `linha_fim`, `situacao`, `commit_sha`, `pull_request_id`, `proposta_id`, `editada_por_humano`, `sincronizado_em` | Único (`regra_id`, `numero`). Conteúdo incorporado após o merge. `situacao`: `vigente` ou `removida`. `proposta_id` único quando preenchido. |
+| VersaoRegra (`versoes_regra`) | `id`, `regra_id`, `numero`, `titulo`, `descricao`, `modulo_id`, `unidade`, `arquivo`, `linha_inicio`, `linha_fim`, `situacao`, `commit_sha`, `pull_request_id`, `proposta_id`, `editada_por_humano`, `incorporado_em` | Único (`regra_id`, `numero`). Conteúdo efetivamente incorporado ao catálogo após aprovação e merge. `situacao`: `vigente` ou `removida`. `proposta_id` único quando preenchido. |
 | Modulo (`modulos`) | `id`, `repositorio_id`, `nome_qualificado`, `caminho`, `commit_sha`, `ativo` | Único (`repositorio_id`, `nome_qualificado`). Módulos removidos são marcados como inativos, sem exclusão, para preservar as versões antigas das regras. |
 | Dependência (`modulo_dependencia`) | `origem_id`, `destino_id`, `tipo` | Chave primária (`origem_id`, `destino_id`, `tipo`). `tipo`: `importacao` ou `chamada`. |
 
-A comparação entre `propostas` e `versoes_regra` mostra o que a IA propôs e o que foi incorporado após a revisão. Essa separação sustenta a avaliação descrita na seção 6.
+A separação entre os campos originais de `propostas`, os campos revisados e `versoes_regra` mostra exatamente o que a IA propôs, o que o revisor ajustou no portal e o que entrou no catálogo vigente após o merge. Essa separação sustenta a avaliação descrita na seção 6.
 
-`trechos_codigo` registra as unidades alteradas e as unidades de contexto exatamente como foram enviadas ao Gemini. Com isso, o histórico do portal pode mostrar o código anterior e o novo que motivaram cada versão de uma regra, seguindo `versoes_regra` → `propostas` → `proposta_trecho` → `trechos_codigo`, e o replay pode reproduzir cada resposta sem consultar o GitHub. A verificação de que a proposta cita unidades existentes passa a ser garantida por chave estrangeira. O texto do código é copiado para o banco; em repositórios privados, isso significa armazenar código de terceiros, o que deve constar nas limitações do estudo.
+`trechos_codigo` registra as unidades alteradas e as unidades de contexto exatamente como foram enviadas ao Gemini. Com isso, tanto a tela de revisão quanto o histórico do portal exibem o código anterior e o novo que motivaram cada proposta e cada versão da regra (`versoes_regra` → `propostas` → `proposta_trecho` → `trechos_codigo`), e o replay pode reproduzir cada resposta sem consultar o GitHub. A verificação de que a proposta cita unidades existentes é garantida por chave estrangeira. O texto do código é copiado para o banco; em repositórios privados, isso significa armazenar trechos de código de terceiros, o que deve constar nas limitações do estudo.
 
 Os trechos são cópias do momento da análise e não substituem o estado atual do código usado pelo grafo. As duas informações se relacionam pelo nome qualificado da unidade.
 
@@ -375,6 +388,7 @@ Os trechos são cópias do momento da análise e não substituem o estado atual 
 erDiagram
     USUARIO ||--o{ USUARIO_REPOSITORIO : "tem acesso"
     REPOSITORIO ||--o{ USUARIO_REPOSITORIO : "é acessado por"
+    USUARIO |o--o{ PROPOSTA : "revisa"
     REPOSITORIO ||--o{ PULL_REQUEST : "recebe"
     REPOSITORIO ||--o{ EVENTO : "origina"
     PULL_REQUEST |o--o{ EVENTO : "é notificado por"
@@ -401,6 +415,7 @@ erDiagram
 | Relação | Cardinalidade | Implementação | Leitura |
 |---|---|---|---|
 | Usuario ↔ Repositorio | N:N | `usuario_repositorio` | Uma pessoa acessa vários repositórios, e um repositório é acessado por várias pessoas. |
+| Usuario → Proposta | 0..1:0..N | `propostas.revisado_por_id` (nulo) | Uma pessoa revisa várias propostas no portal; propostas pendentes ou obsoletas não têm revisor. |
 | Repositorio → PullRequest | 1:0..N | `pull_requests.repositorio_id` | Todo PR pertence a um repositório. |
 | Repositorio → Evento | 1:0..N | `eventos.repositorio_id` | Todo evento pertence a um repositório. |
 | PullRequest → Evento | 0..1:0..N | `eventos.pull_request_id` (nulo) | Um PR recebe vários eventos; um evento ignorado pode não estar ligado a um PR. |
@@ -416,7 +431,7 @@ erDiagram
 | Regra → VersaoRegra | 1:1..N | `versoes_regra.regra_id` | Uma regra só existe a partir de sua primeira versão incorporada. |
 | Regra → VersaoRegra atual | 0..1:0..1 | `regras.versao_atual_id` (nulo) | Aponta a versão vigente; fica nulo apenas durante a criação da regra. |
 | PullRequest → VersaoRegra | 1:0..N | `versoes_regra.pull_request_id` | Um merge pode incorporar versões de várias regras. |
-| Proposta → VersaoRegra | 0..1:0..1 | `versoes_regra.proposta_id` (único, nulo) | Uma proposta aceita origina uma versão; versões criadas por revisores não têm proposta. |
+| Proposta → VersaoRegra | 0..1:0..1 | `versoes_regra.proposta_id` (único, nulo) | Uma proposta aprovada ou ajustada origina uma versão incorporada; entradas manuais não têm proposta. |
 | Modulo → VersaoRegra | 1:0..N | `versoes_regra.modulo_id` | Cada versão da regra pertence a um módulo; um módulo contém várias regras. |
 | Repositorio → Modulo | 1:0..N | `modulos.repositorio_id` | Módulos do commit atual do catálogo. |
 | Modulo ↔ Modulo | N:N | `modulo_dependencia` (`origem_id`, `destino_id`) | Um módulo importa ou chama vários outros e é usado por vários. |
@@ -427,33 +442,34 @@ O grafo é armazenado no nível de módulo. Uma aresta de `chamada` entre dois m
 
 ## 8. Organização do código e reaproveitamento
 
-| Módulo ou componente | Responsabilidade |
-|---|---|
-| API | Webhooks, login pelo GitHub e endpoints de consulta do portal. |
-| Processamento | Consulta e reserva de tarefas, controle de etapas, tentativas, recuperação e histórico operacional. |
-| Análise | Extração de AST, comparação de versões, dependências e seleção de contexto. |
-| IA | Preparação das solicitações, adaptador Gemini e validação das respostas. |
-| Documentação | Propostas, geração de JSON e Markdown, importação após merge e histórico das versões. |
-| GitHub | Validação de eventos, autenticação do app, consulta de versões e publicação de commits e comentários. |
-| Persistência | Modelos SQLAlchemy, repositórios de dados e migrações compartilhadas. |
-| Portal React | Consulta do catálogo, histórico e grafo. |
-| Avaliação | Replay de PRs, linhas de base e coleta de métricas. |
+O backend segue uma **estrutura modular plana** em `backend/src/codice/`, evitando camadas excessivas e mantendo o isolamento estrito onde ele traz ganho real (`analise/` puro sem I/O):
 
-API e worker terão pontos de entrada distintos e reutilizarão os módulos Python do mesmo projeto. O núcleo receberá versões de código e documentação existente sem depender do recebimento de webhooks.
+| Módulo ou componente | Caminho | Responsabilidade |
+|---|---|---|
+| Análise estática | `backend/src/codice/analise/` | Extração de AST, comparação de versões, dependências e seleção de contexto (Python puro, sem I/O, garantido pelo Ruff `TID251`). |
+| IA | `backend/src/codice/ia/` | Prompts, comunicação com o Gemini (`google-genai`) e validação estruturada das respostas. |
+| GitHub | `backend/src/codice/github/` | Validação de webhooks, autenticação do App/OAuth, leitura de versões de código e publicação/atualização de comentários nos PRs. |
+| Catálogo e revisão | `backend/src/codice/catalogo/` | Consultas do catálogo, revisão/aprovação/ajuste/rejeição de propostas, incorporação de versões, histórico, grafo e exportação JSON/Markdown. |
+| Processamento | `backend/src/codice/processamento/` | Reserva e recuperação de tarefas (`FOR UPDATE SKIP LOCKED`), tentativas e orquestração do pipeline do worker. |
+| Avaliação | `backend/src/codice/avaliacao/` | Replay histórico de PRs, linhas de base e coleta de métricas do TCC. |
+| Persistência | `backend/src/codice/db/` | Base SQLAlchemy, fábrica de sessões e modelos ORM compartilhados (`acesso`, `codigo_catalogo`, `operacao`), além das migrações em `backend/migrations/`. |
+| API | `backend/src/codice/api/` | Aplicação FastAPI, rotas de saúde, webhooks, login GitHub, consultas do portal e revisão de propostas. |
+| Pontos de entrada | `codice/worker.py`, `codice/cli.py` | Execução do worker (`codice-worker`) e da CLI (`codice`) reutilizando os mesmos módulos. |
+| Portal React | `frontend/` | Interface de consulta (catálogo, histórico, grafo) e revisão/aprovação de propostas. |
 
-O pipeline também poderá ser chamado pelo terminal e pelo replay histórico. Na avaliação, executará as mesmas etapas de análise e interpretação, com publicação no GitHub desabilitada e resultados registrados para comparação com o gabarito.
+API, worker e CLI têm pontos de entrada distintos e reutilizam os mesmos módulos Python. Na avaliação, o replay executa o mesmo núcleo `analise/` e `ia/`, com publicação no GitHub desabilitada e resultados registrados para comparação com o gabarito.
 
 ## 9. Ordem de implementação
 
-1. **Analisador local:** fixar o Python, comparar duas versões pelo terminal, extrair estruturas e identificar alterações e dependências. Verificar a sintaxe dos projetos selecionados.
-2. **Catálogo e Gemini:** gerar uma base inicial, integrar o Gemini 3.6 Flash, produzir propostas estruturadas e executar o piloto para avaliar o modelo e calibrar a configuração.
-3. **Persistência e fila:** configurar PostgreSQL e SQLAlchemy, registrar evento e tarefa na mesma transação e implementar reserva, tentativas e recuperação do worker. Verificar duplicação de entregas, falha durante a análise e expiração de reservas.
-4. **GitHub App e documentação no PR:** receber eventos, publicar JSON e Markdown na branch do PR e comentar os resultados. Verificar mudanças concorrentes, novas tentativas de publicação e prevenção de ciclos gerados pelo bot.
-5. **Sincronização após merge:** importar a documentação efetivamente incorporada, preservar revisões humanas e manter o histórico sem regressão do catálogo atual. Verificar fechamento sem merge e diferentes formas de merge.
-6. **Portal React:** implementar login pelo GitHub, filtro dos repositórios acessíveis, consultas de catálogo, histórico e grafo, indicação da versão sincronizada e publicação do build estático.
-7. **Avaliação:** executar replay histórico e linhas de base, medindo detecção, corretude, atualização, tempo e consumo conforme o escopo.
+1. **Analisador local (`analise/` + `cli.py`):** fixar o Python 3.15, comparar duas versões pelo terminal, extrair estruturas e identificar alterações, dependências e contexto. Verificar a sintaxe dos projetos selecionados.
+2. **Catálogo inicial e Gemini (`ia/` + `catalogo/`):** gerar uma base inicial, integrar o Gemini 3.6 Flash, produzir propostas estruturadas e executar o piloto para avaliar o modelo e calibrar a configuração.
+3. **Persistência e fila (`db/` + `processamento/`):** configurar PostgreSQL, modelos SQLAlchemy e migrações Alembic, registrar evento e tarefa na mesma transação e implementar reserva, tentativas e recuperação do worker. Verificar duplicação de entregas, falha durante a análise e expiração de reservas.
+4. **GitHub App e feedback no PR (`github/` + `api/`):** receber webhooks, ler versões do código (`Contents: read`) e publicar/atualizar o comentário no PR com o resumo das propostas e o link direto para revisão no portal (`Pull requests: write`). Verificar atualizações concorrentes (`synchronize`), idempotência do comentário e novas tentativas.
+5. **Revisão no portal e incorporação pós-merge (`catalogo/` + `api/` + `processamento/`):** implementar aprovação, ajuste e rejeição de propostas preservando a saída original da IA, incorporar propostas aprovadas no catálogo vigente após o merge (e após revisão tardia), atualizar o grafo sem regressão e gerar exportação JSON/Markdown. Verificar fechamento sem merge e diferentes formas de merge.
+6. **Portal React (`frontend/`):** implementar login pelo GitHub, filtro dos repositórios acessíveis, tela de revisão de propostas do PR (acessada pelo link do comentário no PR), catálogo pesquisável, histórico por PR, grafo com Cytoscape.js, indicação de pendências e publicação do build estático.
+7. **Avaliação (`avaliacao/`):** executar replay histórico e linhas de base, medindo detecção, corretude, atualização (*drift*), tempo e consumo conforme o escopo.
 
-O registro das métricas e configurações começará nas primeiras execuções. A geração da base inicial também precisará passar por revisão no GitHub antes de ser tratada como documentação vigente.
+O registro das métricas e configurações começa nas primeiras execuções. A base inicial também passa por revisão no portal antes de compor o catálogo vigente.
 
 ## 10. Decisões resolvidas, esclarecimentos e pontos em aberto
 
@@ -461,37 +477,36 @@ Os itens respondidos foram incorporados como decisões de arquitetura. A impleme
 
 ### 10.1. Resolvidos
 
-- **Modelo de IA — Gemini 3.6 Flash.** O worker utilizará `gemini-3.6-flash` pelo adaptador Python. O piloto avaliará essa escolha; a seleção do modelo deixou de ser uma pendência.
-- **Compatibilidade do analisador — `ast` da versão instalada.** A ferramenta analisará código da versão atual e de versões anteriores do Python 3 que esse parser aceite. Casos incompatíveis ou não tratados serão informados como limitações. A política está definida na seção 3, sem pressupor que todo código antigo seja aceito.
-- **Hospedagem — Render e PostgreSQL em oferta gratuita.** A Render está escolhida para os processos da aplicação, e o banco deverá usar uma oferta gratuita. O provedor do banco e os planos de execução ainda precisam ser definidos, conforme as condições explicadas na seção 4.
-- **Controle de acesso — login pelo GitHub.** O portal exigirá login com a conta do GitHub e mostrará apenas os repositórios acessíveis à pessoa, conforme a seção 7.
-- **Modelo de dados — onze entidades.** Usuário, repositório, módulo, regra, versão da regra, pull request, evento, tarefa, análise, trecho de código e proposta, com as relações e cardinalidades da seção 7.
-- **Granularidade do grafo — nível de módulo.** O banco e o portal trabalham com módulos e dependências entre módulos. As dependências entre funções e métodos são calculadas em memória pelo analisador para selecionar o contexto. Uma tabela de unidades de código só será acrescentada se o desenvolvimento mostrar essa necessidade.
+- **Nome da plataforma — Códice.** Identidade adotada na documentação e nos identificadores técnicos (`codice`).
+- **Arquitetura do backend — monólito modular plano em Python.** Pastas diretas por responsabilidade em `backend/src/codice/`, usando SQLAlchemy/Pydantic diretamente nos módulos e preservando a pureza (sem I/O) apenas no núcleo `analise/` (verificada pelo Ruff `TID251`).
+- **Revisão e aceitação — no portal, com comentário resumo + link no PR.** O bot publica no PR apenas o resumo das alterações sugeridas e o link direto para revisão no portal (sem commits automáticos na branch do PR). O revisor aceita, ajusta ou rejeita no portal, e as propostas aprovadas entram no catálogo vigente no merge.
+- **Fonte oficial do catálogo — PostgreSQL (exportável em JSON e Markdown).** Elimina a necessidade de permissão de escrita em branches (`Contents: read`), elimina ciclos de `synchronize` e simplifica PRs de *forks*.
+- **Modelo de IA — Gemini 3.6 Flash.** O worker utiliza `gemini-3.6-flash` pelo módulo `codice/ia/`.
+- **Compatibilidade do analisador — `ast` da versão instalada.** Analisa código da versão atual e de versões anteriores do Python 3 aceitas pelo parser, registrando incompatibilidades como análise incompleta.
+- **Hospedagem — Render e PostgreSQL em oferta gratuita.** Render para API e worker; provedor gratuito de PostgreSQL e planos de execução ainda a definir.
+- **Controle de acesso — login pelo GitHub.** Portal com login OAuth da GitHub App, filtrando repositórios acessíveis e registrando autoria das revisões.
+- **Modelo de dados — onze entidades e três tabelas associativas.** Inclui status e campos de revisão em `propostas`, preservando a saída original da IA imutável.
+- **Granularidade do grafo — nível de módulo.** Dependências entre funções/métodos são calculadas em memória pelo analisador para seleção de contexto.
 
 ### 10.2. Esclarecimento: ferramentas e publicação do portal React
 
 Esse item reúne as escolhas necessárias para desenvolver as telas, buscar os dados e colocar o portal no ar:
 
-1. **Ferramentas:** são os programas usados para desenvolver e preparar o frontend para publicação. O Vite é a proposta atual: oferece o servidor de desenvolvimento e gera o build, um conjunto de arquivos HTML, CSS e JavaScript que o navegador carrega. [Build com Vite](https://vite.dev/guide/build.html).
-2. **Navegação:** define como a pessoa passa entre catálogo, histórico e grafo, inclusive ao abrir um endereço diretamente. Por exemplo, `/catalogo` e `/historico` poderiam abrir telas diferentes; esses caminhos são ilustrativos e ainda serão definidos.
-3. **Consultas à API:** definem como cada tela pede seus dados ao FastAPI e apresenta carregamento, resultado ou erro. Por exemplo, ao abrir o catálogo, o React poderia chamar `GET /api/regras`; a API consultaria o PostgreSQL e devolveria JSON para a tela. Esse endpoint também é ilustrativo.
-4. **Publicação do build estático:** significa disponibilizar os arquivos gerados para que o navegador possa baixá-los. A proposta atual é servi-los pela própria API hospedada na Render. O servidor de desenvolvimento do Vite é usado durante o trabalho local; a publicação utiliza o build.
-
-A dúvida sobre o significado do item fica esclarecida aqui. A escolha final das ferramentas, das rotas e da forma de publicação continua em aberto, pois ainda não foi definida na anotação.
+1. **Ferramentas:** Vite para servidor de desenvolvimento (com proxy `/api → :8000`) e geração do build estático. [Build com Vite](https://vite.dev/guide/build.html).
+2. **Navegação:** define como a pessoa passa entre revisão de propostas do PR (aberta pelo link do comentário no GitHub), catálogo, histórico e grafo — por exemplo `/revisao`, `/catalogo`, `/historico` e `/grafo` (caminhos ilustrativos, a definir na etapa 6).
+3. **Consultas e mutações na API:** definem como cada tela consome a API FastAPI (`/api/...`) com estados de carregamento, erro e vazio, sempre passando pelo cliente centralizado em `src/compartilhado/api/cliente.ts`.
+4. **Publicação do build estático:** proposta atual de servir os arquivos gerados pela própria API hospedada na Render.
 
 ### 10.3. Em aberto
 
 - Cotas disponíveis para o Gemini 3.6 Flash e configuração do piloto.
 - Critérios de seleção de contexto e resolução estática de dependências.
-- Formato do catálogo, caminhos gerados e regra de formação do `identificador` estável das regras entre versões.
-- Detalhes do modelo de dados: tipos, índices e migrações; registro das etapas e tentativas em colunas de `tarefas` e `analises` ou em tabela própria; intervalo de consulta, duração e renovação das reservas, limites de tentativas e procedimento de reprocessamento.
+- Regra de formação do `identificador` estável das regras entre versões e formato detalhado das exportações JSON e Markdown.
+- Detalhes do modelo de dados: tipos, índices e migrações; intervalo de consulta, duração e renovação das reservas, limites de tentativas e procedimento de reprocessamento.
 - Módulos e dependências guardam apenas o commit atual do catálogo; definir se o replay recalculará o grafo de versões antigas com o `ast` ou se o banco precisará guardar uma cópia por commit.
-- Identificação dos commits do bot, deduplicação por versão e preservação dos ajustes humanos à documentação.
-- Tratamento de PRs de forks, permissões de escrita e restrições das branches.
-- Reconciliação com a branch de referência quando novos commits ou merges tornarem uma análise desatualizada; tratamento de documentação inválida ou ausente após merge.
-- Procedimento para selecionar e revisar a documentação inicial e manter seus artefatos JSON e Markdown consistentes após edições humanas.
-- Detalhes do login: duração da sessão no portal, armazenamento do token do usuário no servidor e intervalo para verificar novamente as permissões.
-- Escolhas de implementação do React explicadas na seção 10.2: ferramentas, navegação, consultas à API e publicação do build estático.
+- Permissão mínima exigida no GitHub (`write`, `maintain` ou `admin` em `usuario_repositorio`) para aprovar/editar propostas no portal, duração da sessão OAuth e intervalo para revalidar permissões.
+- Reconciliação quando novos merges na branch padrão tornarem uma análise de PR aberto desatualizada.
+- Rotas definitivas e estratégia final de publicação do build estático do React.
 - Provedor da oferta gratuita de PostgreSQL, plano do worker na Render, disponibilidade da API para receber webhooks, backup, reinício dos processos e recuperação de entregas com falha.
 
-O primeiro incremento será o **analisador local que compara duas versões e produz diferenças estruturais e contexto**. Em seguida, o mesmo pipeline Python integrará o Gemini para propor a atualização da documentação e será reutilizado pelo worker e pelo replay.
+O primeiro incremento é o **analisador local (`codice/analise/` + `codice/cli.py`) que compara duas versões e produz diferenças estruturais e contexto**. Em seguida, o mesmo pipeline Python integrará o Gemini para propor atualizações na documentação e será reutilizado pelo worker e pelo replay.

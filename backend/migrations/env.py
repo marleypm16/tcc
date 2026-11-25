@@ -1,10 +1,10 @@
-"""Ambiente do Alembic: usa a URL da configuração do Lastro e os metadados dos modelos ORM."""
+"""Ambiente do Alembic: usa a URL da configuração do Códice e os metadados dos modelos ORM."""
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from lastro.config import obter_configuracao
-from lastro.persistencia.modelos import Base
+from codice.config import obter_configuracao
+from codice.db.modelos import Base
 
 config = context.config
 config.set_main_option("sqlalchemy.url", obter_configuracao().database_url)

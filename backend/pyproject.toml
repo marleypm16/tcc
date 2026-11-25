@@ -1,5 +1,5 @@
 [project]
-name = "lastro"
+name = "codice"
 version = "0.1.0"
 description = "Documentação viva de regras de negócio a partir de pull requests (TCC)."
 requires-python = ">=3.15,<3.16"
@@ -16,15 +16,15 @@ dependencies = [
 ]
 
 [project.scripts]
-lastro = "lastro.entrypoints.cli.main:main"
-lastro-worker = "lastro.entrypoints.worker.main:main"
+codice = "codice.cli:main"
+codice-worker = "codice.worker:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/lastro"]
+packages = ["src/codice"]
 
 # --------------------------------------------------------------------------- ruff
 [tool.ruff]
@@ -45,33 +45,40 @@ select = [
     "S",       # bandit (segurança)
     "PT",      # estilo pytest
     "ARG",     # argumentos não usados
-    "TID",     # tidy-imports (regra de camadas, abaixo)
+    "TID",     # tidy-imports (pureza de analise/, abaixo)
     "RUF",
 ]
 
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"
 
-# Regra de dependência da arquitetura hexagonal: domain/ e application/ não importam
-# frameworks nem bibliotecas de I/O. Os caminhos liberados estão em per-file-ignores.
+# Mantém `analise/` como núcleo Python puro (sem I/O nem frameworks), para reuso
+# direto no worker, na CLI e no replay histórico. Os demais módulos têm acesso livre.
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
-"fastapi".msg = "Framework web só em entrypoints/api."
-"starlette".msg = "Framework web só em entrypoints/api."
-"sqlalchemy".msg = "Banco só em persistencia/ e adapters/."
-"alembic".msg = "Migrações só em migrations/."
-"psycopg".msg = "Banco só em persistencia/ e adapters/."
-"pydantic".msg = "Use dataclasses no domínio e na aplicação; pydantic só em adapters/ e entrypoints/."
-"pydantic_settings".msg = "Configuração só em lastro/config.py."
-"httpx".msg = "HTTP só em adapters/."
-"google".msg = "SDK do Gemini só em interpretacao/adapters/."
-"lastro.persistencia".msg = "persistencia/ é infraestrutura: importe só em adapters/ e entrypoints/."
-"lastro.config".msg = "Configuração é injetada pelos entrypoints; não leia em domain/ ou application/."
+"fastapi".msg = "analise/ é Python puro: não importe FastAPI no núcleo estático."
+"starlette".msg = "analise/ é Python puro: não importe Starlette no núcleo estático."
+"sqlalchemy".msg = "analise/ é Python puro: não acesse o banco no núcleo estático."
+"alembic".msg = "analise/ é Python puro: não importe Alembic no núcleo estático."
+"psycopg".msg = "analise/ é Python puro: não acesse o banco no núcleo estático."
+"pydantic".msg = "analise/ é Python puro: use dataclasses no núcleo estático."
+"pydantic_settings".msg = "Configuração só em codice/config.py."
+"httpx".msg = "analise/ é Python puro: não faça chamadas HTTP no núcleo estático."
+"google".msg = "analise/ é Python puro: chamadas ao Gemini ficam em codice/ia/."
+"codice.db".msg = "analise/ é Python puro: não importe codice.db no núcleo estático."
+"codice.config".msg = "analise/ é Python puro: receba parâmetros explícitos em vez de ler configuração."
 
 [tool.ruff.lint.per-file-ignores]
-"src/lastro/*/adapters/**" = ["TID251"]
-"src/lastro/entrypoints/**" = ["TID251"]
-"src/lastro/persistencia/**" = ["TID251"]
-"src/lastro/config.py" = ["TID251"]
+"src/codice/api/**" = ["TID251"]
+"src/codice/avaliacao/**" = ["TID251"]
+"src/codice/catalogo/**" = ["TID251"]
+"src/codice/db/**" = ["TID251"]
+"src/codice/github/**" = ["TID251"]
+"src/codice/ia/**" = ["TID251"]
+"src/codice/processamento/**" = ["TID251"]
+"src/codice/__init__.py" = ["TID251"]
+"src/codice/cli.py" = ["TID251"]
+"src/codice/config.py" = ["TID251"]
+"src/codice/worker.py" = ["TID251"]
 "migrations/**" = ["TID251"]
 "tests/**" = ["TID251", "S101", "S105", "S106"]
 
@@ -82,7 +89,7 @@ docstring-code-format = true
 [tool.mypy]
 strict = true
 mypy_path = "src"
-packages = ["lastro"]
+packages = ["codice"]
 plugins = ["pydantic.mypy"]
 warn_unreachable = true
 
@@ -97,7 +104,7 @@ addopts = ["--import-mode=importlib", "--strict-markers", "-ra"]
 markers = ["integration: precisa do PostgreSQL de testes (docker compose up -d db)"]
 
 [tool.coverage.run]
-source = ["lastro"]
+source = ["codice"]
 branch = true
 
 [tool.coverage.report]

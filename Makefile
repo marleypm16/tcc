@@ -22,10 +22,10 @@ db-parar: ## Para o PostgreSQL
 
 # ---------------------------------------------------------------- execução
 api: ## API FastAPI com reload em http://localhost:8000
-	$(BACK) uv run uvicorn lastro.entrypoints.api.app:app --reload
+	$(BACK) uv run uvicorn codice.api.app:app --reload
 
 worker: ## Worker de tarefas
-	$(BACK) uv run lastro-worker
+	$(BACK) uv run codice-worker
 
 portal: ## Portal React (Vite) em http://localhost:5173
 	$(FRONT) pnpm dev
@@ -35,7 +35,7 @@ formatar: ## Formata e corrige automaticamente (ruff + biome)
 	$(BACK) uv run ruff format . && uv run ruff check --fix .
 	$(FRONT) pnpm check:fix
 
-lint: ## Lint sem alterar arquivos (inclui regra de camadas)
+lint: ## Lint sem alterar arquivos (inclui pureza de analise/)
 	$(BACK) uv run ruff format --check . && uv run ruff check .
 	$(FRONT) pnpm check
 
